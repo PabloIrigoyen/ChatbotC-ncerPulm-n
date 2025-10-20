@@ -102,7 +102,14 @@ class LungHealthChatbot:
                 if isinstance(entities, list):
                     for entity in entities:
                         if entity and isinstance(entity, str):
-                            self.entity_to_questions[entity.strip().lower()].append(idx)
+                            clean_entity = entity.strip().lower()
+                            self.entity_to_questions[clean_entity].append({
+                                'index': idx,
+                                'pregunta': row['pregunta'],
+                                'respuesta': row['respuesta'],
+                                'intencion': row['intencion'],
+                                'all_entities': entities
+                            })
 
             logging.info("Estructuras de búsqueda configuradas")
 
@@ -413,22 +420,21 @@ class LungHealthChatbot:
         return base_recommendations + specific_recs
 
     def _extract_entities(self, query):
-        """Extraer entidades de la consulta."""
+        """Extraer entidades de la consulta de forma más robusta."""
         try:
             query_lower = query.lower().strip()
             found_entities = set()
 
-            # Obtener todas las entidades del dataset
-            all_entities = set()
-            for entities in self.qa_data['entidades_lista']:
-                if isinstance(entities, list):
-                    for entity in entities:
-                        if entity and isinstance(entity, str):
-                            all_entities.add(entity.strip().lower())
-
-            # Buscar coincidencias
-            for entity in all_entities:
-                if entity in query_lower:
+            # Buscar en todas las entidades del dataset
+            for entity in self.entity_to_questions.keys():
+                # Coincidencia exacta
+                if f" {entity} " in f" {query_lower} ":
+                    found_entities.add(entity)
+                # Coincidencia de palabra completa
+                elif entity in query_lower.split():
+                    found_entities.add(entity)
+                # Coincidencia parcial para entidades compuestas
+                elif any(part in query_lower for part in entity.split('_')):
                     found_entities.add(entity)
 
             return list(found_entities)
@@ -438,13 +444,15 @@ class LungHealthChatbot:
             return []
 
     def find_best_match(self, query):
-        """Encontrar la mejor coincidencia para la consulta."""
+        """Encontrar la mejor coincidencia para la consulta - VERSIÓN MEJORADA CON PRIORIDAD DE ESPECIFICIDAD."""
         try:
             query_lower = query.lower().strip()
+            logging.info(f"🔍 Buscando match para: '{query}'")
 
             # 1. Búsqueda exacta
             for i, question in enumerate(self.qa_data['pregunta']):
                 if query_lower == question.lower():
+                    logging.info(f"✅ Match exacto encontrado: {question}")
                     return {
                         "pregunta": question,
                         "respuesta": self.qa_data.iloc[i]['respuesta'],
@@ -452,58 +460,146 @@ class LungHealthChatbot:
                         "tipo": "exacta"
                     }
 
-            # 2. Búsqueda por similitud de texto
-            best_match = None
-            best_score = 0
+            # 2. Búsqueda por entidades MULTIPLES con prioridad de especificidad
+            entities = self._extract_entities(query)
+            logging.info(f"📊 Entidades encontradas en query: {entities}")
+
+            if entities:
+                # Buscar preguntas que contengan MÚLTIPLES entidades de la consulta
+                entity_matches = []
+
+                # Recolectar todas las preguntas relevantes
+                all_relevant_questions = set()
+                for entity in entities:
+                    if entity in self.entity_to_questions:
+                        for q_info in self.entity_to_questions[entity]:
+                            all_relevant_questions.add(q_info['index'])
+
+                # Calcular score para cada pregunta relevante
+                for idx in all_relevant_questions:
+                    row = self.qa_data.iloc[idx]
+                    question_entities = row['entidades_lista']
+
+                    if not isinstance(question_entities, list):
+                        continue
+
+                    # Calcular cuántas entidades de la query coinciden con las entidades de la pregunta
+                    matching_entities = sum(
+                        1 for entity in entities if any(entity in str(e).lower() for e in question_entities))
+                    total_query_entities = len(entities)
+
+                    # Score basado en el porcentaje de entidades que coinciden
+                    entity_score = matching_entities / total_query_entities if total_query_entities > 0 else 0
+
+                    # BONUS POR ESPECIFICIDAD: Priorizar preguntas que contengan palabras específicas de la consulta
+                    specificity_bonus = 0
+                    question_lower = row['pregunta'].lower()
+
+                    # Bonus por coincidencia de palabras específicas y únicas
+                    query_words = set(query_lower.split())
+                    question_words = set(question_lower.split())
+                    common_words = query_words.intersection(question_words)
+
+                    # Bonus adicional por palabras específicas que no son comunes
+                    specific_words = ['microcítico', 'microcitico', 'células pequeñas', 'células pequeñas',
+                                      'no microcítico', 'no microcitico', 'células no pequeñas', 'adenocarcinoma',
+                                      'células escamosas', 'células grandes', 'estadio', 'etapa']
+
+                    for word in specific_words:
+                        if word in query_lower and word in question_lower:
+                            specificity_bonus += 0.3
+
+                    # Bonus por palabras únicas de la consulta que están en la pregunta
+                    unique_match_words = [w for w in query_words if w in question_words and len(w) > 3]
+                    specificity_bonus += len(unique_match_words) * 0.1
+
+                    total_score = entity_score + specificity_bonus
+
+                    if total_score > 0.3:
+                        entity_matches.append({
+                            "pregunta": row['pregunta'],
+                            "respuesta": row['respuesta'],
+                            "score": total_score,
+                            "tipo": f"entidades_multiples_{matching_entities}",
+                            "matching_entities": matching_entities,
+                            "total_entities": total_query_entities,
+                            "specificity_bonus": specificity_bonus
+                        })
+
+                if entity_matches:
+                    # Ordenar por score descendente, luego por número de entidades, luego por bonus de especificidad
+                    entity_matches.sort(key=lambda x: (x['score'], x['matching_entities'], x['specificity_bonus']),
+                                        reverse=True)
+                    best_entity_match = entity_matches[0]
+                    logging.info(
+                        f"✅ Mejor match por entidades: {best_entity_match['pregunta']} (score: {best_entity_match['score']:.2f}, entidades: {best_entity_match['matching_entities']}, especificidad: {best_entity_match['specificity_bonus']:.2f})")
+
+                    # Si hay múltiples matches con score similar, verificar cuál es más específico
+                    if len(entity_matches) > 1:
+                        top_matches = entity_matches[:3]
+                        logging.info(f"🔝 Top 3 matches:")
+                        for i, match in enumerate(top_matches):
+                            logging.info(f"   {i + 1}. '{match['pregunta']}' (score: {match['score']:.2f})")
+
+                    return best_entity_match
+
+            # 3. Búsqueda por similitud de texto con verificación de contenido específico
+            best_similarity_match = None
+            best_similarity_score = 0
 
             for i, question in enumerate(self.qa_data['pregunta']):
                 similarity = difflib.SequenceMatcher(None, query_lower, question.lower()).ratio()
-                if similarity > best_score and similarity > 0.6:
-                    best_score = similarity
-                    best_match = {
+
+                # Verificar si la pregunta contiene palabras específicas de la consulta
+                specific_match_bonus = 0
+                specific_words_query = ['microcítico', 'microcitico', 'células pequeñas']
+                specific_words_question = ['microcítico', 'microcitico', 'células pequeñas']
+
+                # Bonus si ambos contienen las mismas palabras específicas
+                for word in specific_words_query:
+                    if word in query_lower and word in question.lower():
+                        specific_match_bonus += 0.5
+
+                adjusted_similarity = similarity + specific_match_bonus
+
+                if adjusted_similarity > best_similarity_score and adjusted_similarity > 0.5:
+                    best_similarity_score = adjusted_similarity
+                    best_similarity_match = {
                         "pregunta": question,
                         "respuesta": self.qa_data.iloc[i]['respuesta'],
-                        "score": similarity,
-                        "tipo": "similaridad"
+                        "score": adjusted_similarity,
+                        "tipo": "similaridad_especifica"
                     }
 
-            if best_match:
-                return best_match
+            if best_similarity_match:
+                logging.info(
+                    f"✅ Match por similitud específica: {best_similarity_match['pregunta']} (score: {best_similarity_match['score']:.2f})")
+                return best_similarity_match
 
-            # 3. Búsqueda por entidades
-            entities = self._extract_entities(query)
-            if entities:
-                entity_matches = []
-                for entity in entities:
-                    if entity in self.entity_to_questions:
-                        for idx in self.entity_to_questions[entity]:
-                            entity_matches.append({
-                                "pregunta": self.qa_data.iloc[idx]['pregunta'],
-                                "respuesta": self.qa_data.iloc[idx]['respuesta'],
-                                "score": 0.7,
-                                "tipo": f"entidad_{entity}"
-                            })
-
-                if entity_matches:
-                    # Eliminar duplicados
-                    unique_matches = {}
-                    for match in entity_matches:
-                        key = match['pregunta']
-                        if key not in unique_matches:
-                            unique_matches[key] = match
-
-                    matches_list = list(unique_matches.values())
-                    if matches_list:
-                        return matches_list[0]  # Devolver el primero
-
+            logging.info("❌ No se encontró match adecuado")
             return None
 
         except Exception as e:
             logging.error(f"Error en find_best_match: {e}")
             return None
 
+    def debug_query(self, query):
+        """Método para debugging detallado de consultas."""
+        logging.info(f"🔍 DEBUG QUERY: '{query}'")
+
+        entities = self._extract_entities(query)
+        logging.info(f"📊 ENTIDADES EXTRAÍDAS: {entities}")
+
+        # Mostrar todas las preguntas que contienen estas entidades
+        for entity in entities:
+            if entity in self.entity_to_questions:
+                logging.info(f"📋 PREGUNTAS con entidad '{entity}':")
+                for q_info in self.entity_to_questions[entity]:
+                    row = self.qa_data.iloc[q_info['index']]
+                    logging.info(f"   - '{row['pregunta']}' | Entidades: {row['entidades_lista']}")
+
     def process_message(self, message):
-        """Procesar mensaje del usuario."""
+        """Procesar mensaje del usuario - VERSIÓN SIMPLIFICADA."""
         try:
             if not message or not isinstance(message, str):
                 return "Por favor escribe un mensaje válido."
@@ -519,7 +615,7 @@ class LungHealthChatbot:
                 'type': 'user'
             })
 
-            # Comandos especiales
+            # Comandos especiales - SOLO EVALUACIÓN DE RIESGO Y AYUDA
             lower_message = message.lower()
 
             # Evaluación de riesgo
@@ -555,22 +651,21 @@ class LungHealthChatbot:
 💡 _Esta evaluación es informativa. Consulta siempre con un profesional de la salud._"""
                     }
 
-            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos días']):
+            # SOLO COMANDOS ESENCIALES
+            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos días', 'buenas']):
                 response = {'bot_response': self.get_welcome_message()}
             elif any(cmd in lower_message for cmd in ['ayuda', 'comandos']):
                 response = {'bot_response': self.get_help_message()}
-            elif any(cmd in lower_message for cmd in ['síntomas', 'sintomas']):
-                response = {'bot_response': self.get_symptoms_response()}
-            elif any(cmd in lower_message for cmd in ['diagnóstico', 'diagnostico']):
-                response = {'bot_response': self.get_diagnosis_response()}
-            elif any(cmd in lower_message for cmd in ['tratamiento']):
-                response = {'bot_response': self.get_treatment_response()}
             else:
-                # Búsqueda en el dataset
+                # DEBUG: Mostrar información de la consulta
+                self.debug_query(message)
+
+                # Búsqueda en el dataset para TODAS las consultas
                 match = self.find_best_match(message)
                 if match:
                     response = {'bot_response': match['respuesta']}
-                    logging.info(f"Match encontrado: {match['tipo']} (score: {match['score']:.2f})")
+                    logging.info(
+                        f"🎯 Match final: {match['tipo']} (score: {match['score']:.2f}) - Pregunta: '{match['pregunta']}'")
                 else:
                     response = {'bot_response': self._get_default_response()}
 
@@ -593,7 +688,7 @@ class LungHealthChatbot:
         default_responses = [
             "No encontré información específica sobre tu consulta. ¿Te gustaría realizar una evaluación de riesgo? Escribe 'evaluar riesgo' para comenzar.",
             "Sobre ese tema no tengo información detallada. Puedo ayudarte con una evaluación de riesgo de cáncer pulmonar o información sobre síntomas/diagnóstico.",
-            "Mi especialidad es el cáncer de pulmón. ¿Te interesa saber sobre síntomas, diagnóstico, o prefieres una evaluación de riesgo personalizada?"
+            "Mi especialidad es el cáncer de pulmón. ¿Te interesa saber sobre algún aspecto específico como síntomas, diagnóstico o tratamientos?"
         ]
         return random.choice(default_responses)
 
@@ -613,70 +708,30 @@ class LungHealthChatbot:
 
 **💬 Comandos disponibles:**
 • "evaluar riesgo" - Cuestionario de evaluación
-• "síntomas" - Síntomas del cáncer de pulmón  
-• "diagnóstico" - Métodos de diagnóstico
-• "tratamiento" - Opciones de tratamiento
 • "ayuda" - Ver todos los comandos
 
-¡Estoy aquí para ayudarte! 😊
+¡Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón! 😊
 """
 
     def get_help_message(self):
         """Mensaje de ayuda."""
         return """
-🤖 **TEMAS Y COMANDOS DISPONIBLES**
+🤖 **COMANDOS DISPONIBLES**
 
 **🔍 EVALUACIÓN DE RIESGO:**
 • "evaluar riesgo" - Cuestionario completo de 15 preguntas
 • "test riesgo" - Evaluación personalizada
 
-**🏥 INFORMACIÓN MÉDICA:**
-• "síntomas" - Síntomas y señales de alerta
-• "diagnóstico" - Métodos de diagnóstico  
-• "tratamiento" - Opciones de tratamiento
-• Tipos de cáncer de pulmón
-• Factores de riesgo
-
 **💡 EJEMPLOS DE PREGUNTAS:**
 • "¿Qué es el cáncer de pulmón microcítico?"
 • "¿Cuáles son los síntomas tempranos?"
 • "¿Cómo se trata el adenocarcinoma?"
+• "Tratamiento por estadio"
+• "Diagnóstico del cáncer de pulmón"
+• "Factores de riesgo"
 
-¡Puedes hacer preguntas en tus propias palabras!
+¡Puedes hacer preguntas en tus propias palabras sobre cualquier tema relacionado con el cáncer de pulmón!
 """
-
-    def get_symptoms_response(self):
-        """Respuesta sobre síntomas."""
-        try:
-            sintomas_data = self.qa_data[self.qa_data['intencion'] == 'sintomas del cáncer del pulmón']
-            if len(sintomas_data) > 0:
-                return sintomas_data.iloc[0]['respuesta']
-            else:
-                return "Los síntomas del cáncer de pulmón pueden incluir tos persistente, dolor en el pecho, dificultad para respirar, tos con sangre, fatiga y pérdida de peso inexplicable."
-        except:
-            return "Los síntomas del cáncer de pulmón pueden incluir tos persistente, dolor en el pecho y dificultad para respirar."
-
-    def get_diagnosis_response(self):
-        """Respuesta sobre diagnóstico."""
-        try:
-            diagnostico_data = self.qa_data[self.qa_data['intencion'] == 'diagnostico del cáncer del pulmón']
-            if len(diagnostico_data) > 0:
-                return diagnostico_data.iloc[0]['respuesta']
-            else:
-                return "El cáncer de pulmón se diagnostica mediante radiografías de tórax, tomografías computarizadas, biopsias y otros métodos de imagen."
-        except:
-            return "El diagnóstico del cáncer de pulmón incluye radiografías, tomografías y biopsias."
-
-    def get_treatment_response(self):
-        """Respuesta sobre tratamiento."""
-        try:
-            tratamiento_data = self.qa_data[self.qa_data['intencion'] == 'tratamiento del cáncer de pulmón']
-            if len(tratamiento_data) > 0:
-                return tratamiento_data.iloc[0]['respuesta']
-            else:
-                return "Los tratamientos para el cáncer de pulmón incluyen cirugía, quimioterapia, radioterapia, inmunoterapia y terapias dirigidas."
-        except:
-            return "Los tratamientos incluyen cirugía, quimioterapia y radioterapia."
 
 
 # Inicializar chatbot
