@@ -21,6 +21,7 @@
             display: flex;
             flex-direction: column;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            position: relative;
         }
         
         .chat-header {
@@ -30,6 +31,9 @@
             text-align: center;
             font-weight: bold;
             font-size: 18px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
         }
         
         .chat-messages {
@@ -37,6 +41,7 @@
             padding: 15px;
             overflow-y: auto;
             background-color: #E5DDD5;
+            padding-bottom: 70px; /* Espacio para la caja de entrada */
         }
         
         .message {
@@ -75,11 +80,20 @@
             margin-top: 5px;
         }
         
+        .chat-input-container {
+            position: sticky;
+            bottom: 0;
+            width: 100%;
+            background-color: #E5DDD5;
+            padding: 10px;
+            border-top: 1px solid #ddd;
+            box-sizing: border-box;
+        }
+        
         .chat-input {
             display: flex;
-            padding: 10px;
-            background-color: #E5DDD5;
-            border-top: 1px solid #ddd;
+            max-width: 800px;
+            margin: 0 auto;
         }
         
         #user-input {
@@ -134,13 +148,16 @@
         <div class="chat-messages" id="chat-messages">
             <div class="message welcome-message bot-message">
                 <div class="message-sender">Asistente</div>
-                {{ welcome_message }}
-                <div class="message-time">{{ current_time }}</div>
+                Bienvenido al Asistente de Salud Pulmonar. Estoy aquí para ayudarte con información sobre la salud de tus pulmones, síntomas respiratorios y recomendaciones para mantener una buena salud pulmonar. ¿En qué puedo ayudarte hoy?
+                <div class="message-time">10:00 AM</div>
             </div>
         </div>
-        <div class="chat-input">
-            <input type="text" id="user-input" placeholder="Escribe tu mensaje aquí...">
-            <button id="send-button">Enviar</button>
+        
+        <div class="chat-input-container">
+            <div class="chat-input">
+                <input type="text" id="user-input" placeholder="Escribe tu mensaje aquí...">
+                <button id="send-button">Enviar</button>
+            </div>
         </div>
     </div>
 
@@ -176,22 +193,17 @@
                 addMessage('Tú', message, false);
                 userInput.value = '';
                 
-                // Enviar al servidor
-                fetch('/send_message', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ message: message })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    addMessage('Asistente', data.bot_response, true);
-                })
-                .catch(error => {
-                    addMessage('Asistente', 'Lo siento, hubo un error al procesar tu mensaje.', true);
-                    console.error('Error:', error);
-                });
+                // Simular respuesta del bot
+                setTimeout(() => {
+                    const responses = [
+                        "Entiendo tu consulta. ¿Podrías proporcionar más detalles sobre tus síntomas?",
+                        "Para evaluar mejor tu situación, ¿podrías decirme desde cuándo experimentas estos síntomas?",
+                        "Es importante consultar con un profesional de la salud para un diagnóstico preciso. ¿Te gustaría que te proporcione información sobre especialistas en tu área?",
+                        "Mantener una buena salud pulmonar incluye evitar el tabaco, realizar ejercicio regularmente y mantener una dieta equilibrada. ¿Te interesa conocer más sobre hábitos saludables?"
+                    ];
+                    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+                    addMessage('Asistente', randomResponse, true);
+                }, 1000);
             }
             
             sendButton.addEventListener('click', sendMessage);
