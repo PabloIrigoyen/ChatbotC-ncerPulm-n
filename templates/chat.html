@@ -5,19 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Asistente de Salud Pulmonar</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f0f2f5;
             color: #333;
+            height: 100vh;
+            overflow: hidden;
         }
         
         .chat-container {
             max-width: 800px;
+            height: 100vh;
             margin: 0 auto;
             background-color: #E5DDD5;
-            height: 100vh;
             display: flex;
             flex-direction: column;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
@@ -34,6 +40,7 @@
             position: sticky;
             top: 0;
             z-index: 10;
+            flex-shrink: 0;
         }
         
         .chat-messages {
@@ -41,7 +48,7 @@
             padding: 15px;
             overflow-y: auto;
             background-color: #E5DDD5;
-            padding-bottom: 70px; /* Espacio para la caja de entrada */
+            padding-bottom: 80px; /* Espacio para la caja de entrada */
         }
         
         .message {
@@ -81,19 +88,21 @@
         }
         
         .chat-input-container {
-            position: sticky;
+            position: fixed;
             bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
             width: 100%;
+            max-width: 800px;
             background-color: #E5DDD5;
             padding: 10px;
             border-top: 1px solid #ddd;
-            box-sizing: border-box;
+            z-index: 100;
         }
         
         .chat-input {
             display: flex;
-            max-width: 800px;
-            margin: 0 auto;
+            width: 100%;
         }
         
         #user-input {
@@ -115,6 +124,7 @@
             font-weight: bold;
             cursor: pointer;
             transition: background-color 0.2s;
+            white-space: nowrap;
         }
         
         #send-button:hover {
@@ -139,6 +149,54 @@
             border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
+        
+        .risk-options {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        
+        .risk-option-button {
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 15px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .risk-option-button:hover {
+            background-color: #e0e0e0;
+        }
+        
+        .progress-indicator {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            text-align: center;
+        }
+        
+        .risk-result {
+            background-color: white;
+            border-left: 4px solid #0088CC;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        
+        .risk-high {
+            border-left-color: #e74c3c;
+        }
+        
+        .risk-moderate {
+            border-left-color: #f39c12;
+        }
+        
+        .risk-low {
+            border-left-color: #27ae60;
+        }
     </style>
 </head>
 <body>
@@ -148,8 +206,8 @@
         <div class="chat-messages" id="chat-messages">
             <div class="message welcome-message bot-message">
                 <div class="message-sender">Asistente</div>
-                Bienvenido al Asistente de Salud Pulmonar. Estoy aquí para ayudarte con información sobre la salud de tus pulmones, síntomas respiratorios y recomendaciones para mantener una buena salud pulmonar. ¿En qué puedo ayudarte hoy?
-                <div class="message-time">10:00 AM</div>
+                {{ welcome_message }}
+                <div class="message-time">{{ current_time }}</div>
             </div>
         </div>
         
@@ -167,22 +225,55 @@
             const userInput = document.getElementById('user-input');
             const sendButton = document.getElementById('send-button');
             
+            let riskAssessmentActive = false;
+            let currentRiskQuestion = null;
+            
             // Función para agregar un mensaje al chat
-            function addMessage(sender, message, isBot = false) {
+            function addMessage(sender, message, isBot = false, options = null, progress = null) {
                 const messageDiv = document.createElement('div');
                 messageDiv.className = `message ${isBot ? 'bot-message' : 'user-message'}`;
                 
                 // Procesar saltos de línea y emojis
                 message = message.replace(/\n/g, '<br>');
                 
-                messageDiv.innerHTML = `
+                let messageContent = `
                     <div class="message-sender">${sender}</div>
                     <div class="message-content">${message}</div>
-                    <div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
                 `;
+                
+                // Agregar opciones si existen
+                if (options && options.length > 0) {
+                    messageContent += `<div class="risk-options">`;
+                    options.forEach(option => {
+                        messageContent += `<button class="risk-option-button" data-value="${option}">${option}</button>`;
+                    });
+                    messageContent += `</div>`;
+                }
+                
+                // Agregar indicador de progreso si existe
+                if (progress) {
+                    messageContent += `<div class="progress-indicator">${progress}</div>`;
+                }
+                
+                messageContent += `<div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>`;
+                
+                messageDiv.innerHTML = messageContent;
                 
                 chatMessages.appendChild(messageDiv);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
+                
+                // Agregar event listeners a los botones de opciones
+                if (options && options.length > 0) {
+                    setTimeout(() => {
+                        const optionButtons = messageDiv.querySelectorAll('.risk-option-button');
+                        optionButtons.forEach(button => {
+                            button.addEventListener('click', function() {
+                                userInput.value = this.getAttribute('data-value');
+                                sendMessage();
+                            });
+                        });
+                    }, 100);
+                }
             }
             
             // Enviar mensaje al presionar Enter o el botón
@@ -193,17 +284,67 @@
                 addMessage('Tú', message, false);
                 userInput.value = '';
                 
-                // Simular respuesta del bot
-                setTimeout(() => {
-                    const responses = [
-                        "Entiendo tu consulta. ¿Podrías proporcionar más detalles sobre tus síntomas?",
-                        "Para evaluar mejor tu situación, ¿podrías decirme desde cuándo experimentas estos síntomas?",
-                        "Es importante consultar con un profesional de la salud para un diagnóstico preciso. ¿Te gustaría que te proporcione información sobre especialistas en tu área?",
-                        "Mantener una buena salud pulmonar incluye evitar el tabaco, realizar ejercicio regularmente y mantener una dieta equilibrada. ¿Te interesa conocer más sobre hábitos saludables?"
-                    ];
-                    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-                    addMessage('Asistente', randomResponse, true);
-                }, 1000);
+                // Enviar al servidor
+                fetch('/send_message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Manejar respuesta del servidor
+                    if (data.risk_assessment_active) {
+                        riskAssessmentActive = true;
+                        currentRiskQuestion = data.risk_question_data;
+                        
+                        // Mostrar pregunta con opciones si existen
+                        let options = null;
+                        if (currentRiskQuestion && currentRiskQuestion.options) {
+                            options = currentRiskQuestion.options;
+                        }
+                        
+                        addMessage('Asistente', data.bot_response, true, options, 
+                                  currentRiskQuestion ? currentRiskQuestion.progress : null);
+                    } else {
+                        riskAssessmentActive = false;
+                        currentRiskQuestion = null;
+                        
+                        // Verificar si es un resultado de evaluación de riesgo
+                        if (data.bot_response.includes('EVALUACIÓN COMPLETADA')) {
+                            // Aplicar formato especial para resultados de riesgo
+                            const resultDiv = document.createElement('div');
+                            resultDiv.className = 'message bot-message risk-result';
+                            
+                            // Determinar nivel de riesgo para aplicar clase CSS
+                            let riskClass = '';
+                            if (data.bot_response.includes('ALTO')) {
+                                riskClass = 'risk-high';
+                            } else if (data.bot_response.includes('MODERADO')) {
+                                riskClass = 'risk-moderate';
+                            } else if (data.bot_response.includes('BAJO')) {
+                                riskClass = 'risk-low';
+                            }
+                            
+                            resultDiv.classList.add(riskClass);
+                            resultDiv.innerHTML = `
+                                <div class="message-sender">Asistente</div>
+                                <div class="message-content">${data.bot_response.replace(/\n/g, '<br>')}</div>
+                                <div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                            `;
+                            
+                            chatMessages.appendChild(resultDiv);
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        } else {
+                            addMessage('Asistente', data.bot_response, true);
+                        }
+                    }
+                })
+                .catch(error => {
+                    addMessage('Asistente', 'Lo siento, hubo un error al procesar tu mensaje.', true);
+                    console.error('Error:', error);
+                });
             }
             
             sendButton.addEventListener('click', sendMessage);
@@ -211,6 +352,14 @@
                 if (e.key === 'Enter') {
                     sendMessage();
                 }
+            });
+            
+            // Asegurar que el input esté siempre enfocado
+            userInput.focus();
+            
+            // Re-enfocar el input después de enviar mensaje
+            document.addEventListener('click', function() {
+                userInput.focus();
             });
         });
     </script>
