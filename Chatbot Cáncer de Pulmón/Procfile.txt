@@ -1,1 +1,0 @@
-web: gunicorn chatbotv3:app
