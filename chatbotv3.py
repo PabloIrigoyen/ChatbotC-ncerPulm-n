@@ -397,7 +397,7 @@ class LungHealthChatbot:
 
         if risk_level == "ALTO":
             specific_recs = [
-                "🚨 **Consulta médica URGENTE** con neumólogo",
+                "🚨 Consulta médica URGENTE** con neumólogo",
                 "💊 Considera realizar una tomografía computarizada",
                 "🚭 Suspende el tabaquismo inmediatamente",
                 "🏥 Programa evaluación pulmonar completa"
@@ -642,10 +642,10 @@ class LungHealthChatbot:
                     response = {
                         'bot_response': f"""{risk_emoji} **EVALUACIÓN COMPLETADA**
 
-**Nivel de riesgo:** {result['risk_level']}
-**Confianza:** {result['confidence']}
+Nivel de riesgo: {result['risk_level']}
+Confianza: {result['confidence']}
 
-**📋 RECOMENDACIONES:**
+📋 RECOMENDACIONES:
 """ + "\n".join([f"• {rec}" for rec in result['recommendations']]) + """
 
 💡 _Esta evaluación es informativa. Consulta siempre con un profesional de la salud._"""
@@ -694,16 +694,16 @@ class LungHealthChatbot:
 
     def get_welcome_message(self):
         """Mensaje de bienvenida."""
-        model_status = "✅ **Con evaluación de riesgo avanzada**" if self.model_data else "⚠️ **Evaluación básica disponible**"
+        model_status = "✅ Con evaluación de riesgo avanzada" if self.model_data else "⚠️ Evaluación básica disponible"
 
         return f"""
 👋 ¡Hola! Soy tu asistente especializado en **cáncer de pulmón**.
 
 {model_status}
 
-**Puedo ayudarte con:**
+Puedo ayudarte con:
 • 🏥 Información médica sobre cáncer pulmonar
-• 🔍 **Evaluación de riesgo personalizada** 
+• 🔍 Evaluación de riesgo personalizada 
 • 💡 Respuestas a tus preguntas específicas
 
 **💬 Comandos disponibles:**
@@ -716,13 +716,13 @@ class LungHealthChatbot:
     def get_help_message(self):
         """Mensaje de ayuda."""
         return """
-🤖 **COMANDOS DISPONIBLES**
+🤖 COMANDOS DISPONIBLES
 
-**🔍 EVALUACIÓN DE RIESGO:**
+🔍 EVALUACIÓN DE RIESGO:
 • "evaluar riesgo" - Cuestionario completo de 15 preguntas
 • "test riesgo" - Evaluación personalizada
 
-**💡 EJEMPLOS DE PREGUNTAS:**
+💡 EJEMPLOS DE PREGUNTAS:
 • "¿Qué es el cáncer de pulmón microcítico?"
 • "¿Cuáles son los síntomas tempranos?"
 • "¿Cómo se trata el adenocarcinoma?"
@@ -810,3 +810,4 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
