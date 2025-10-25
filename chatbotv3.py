@@ -397,7 +397,7 @@ class LungHealthChatbot:
 
         if risk_level == "ALTO":
             specific_recs = [
-                "🚨 Consulta médica URGENTE** con neumólogo",
+                "🚨 Consulta médica URGENTE con neumólogo",
                 "💊 Considera realizar una tomografía computarizada",
                 "🚭 Suspende el tabaquismo inmediatamente",
                 "🏥 Programa evaluación pulmonar completa"
@@ -697,7 +697,7 @@ Confianza: {result['confidence']}
         model_status = "✅ Con evaluación de riesgo avanzada" if self.model_data else "⚠️ Evaluación básica disponible"
 
         return f"""
-👋 ¡Hola! Soy tu asistente especializado en **cáncer de pulmón**.
+👋 ¡Hola! Soy tu asistente especializado en cáncer de pulmón.
 
 {model_status}
 
@@ -706,7 +706,7 @@ Puedo ayudarte con:
 • 🔍 Evaluación de riesgo personalizada 
 • 💡 Respuestas a tus preguntas específicas
 
-**💬 Comandos disponibles:**
+💬 Comandos disponibles:
 • "evaluar riesgo" - Cuestionario de evaluación
 • "ayuda" - Ver todos los comandos
 
@@ -810,4 +810,5 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
 
