@@ -108,6 +108,7 @@
             padding: 15px;
             border-top: 1px solid #ddd;
             z-index: 100;
+            box-sizing: border-box;
         }
         
         .chat-input {
@@ -274,12 +275,24 @@
                 max-width: 100%;
             }
             
-            .chat-input-container {
+            .chat-header {
                 padding: 12px;
+                font-size: 16px;
+            }
+            
+            .chat-messages {
+                padding: 10px;
+                padding-bottom: 70px;
             }
             
             .message {
                 max-width: 90%;
+                padding: 10px 14px;
+            }
+            
+            .chat-input-container {
+                padding: 10px;
+                padding-bottom: max(10px, env(safe-area-inset-bottom));
             }
             
             #user-input {
@@ -288,7 +301,68 @@
             }
             
             #send-button {
-                padding: 10px 20px;
+                padding: 10px 16px;
+                min-width: 70px;
+            }
+            
+            .risk-options {
+                flex-direction: column;
+            }
+            
+            .risk-option-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+        
+        /* Mejoras para dispositivos muy pequeños */
+        @media (max-width: 480px) {
+            .chat-header {
+                padding: 10px;
+                font-size: 15px;
+            }
+            
+            .message {
+                max-width: 95%;
+                padding: 8px 12px;
+            }
+            
+            .message-sender {
+                font-size: 13px;
+            }
+            
+            .chat-input-container {
+                padding: 8px;
+                padding-bottom: max(8px, env(safe-area-inset-bottom));
+            }
+            
+            #user-input {
+                padding: 8px 14px;
+            }
+            
+            #send-button {
+                padding: 8px 14px;
+                min-width: 60px;
+                font-size: 14px;
+            }
+        }
+        
+        /* Soporte para dispositivos con muesca */
+        @supports(padding: max(0px)) {
+            .chat-input-container {
+                padding-bottom: max(15px, env(safe-area-inset-bottom));
+            }
+            
+            @media (max-width: 768px) {
+                .chat-input-container {
+                    padding-bottom: max(10px, env(safe-area-inset-bottom));
+                }
+            }
+            
+            @media (max-width: 480px) {
+                .chat-input-container {
+                    padding-bottom: max(8px, env(safe-area-inset-bottom));
+                }
             }
         }
         
@@ -321,9 +395,39 @@
             0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
             40% { transform: scale(1); opacity: 1; }
         }
+        
+        /* Indicador de reconexión */
+        .connection-status {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background-color: #f39c12;
+            color: white;
+            text-align: center;
+            padding: 8px;
+            font-size: 14px;
+            z-index: 1000;
+            transform: translateY(-100%);
+            transition: transform 0.3s ease;
+        }
+        
+        .connection-status.show {
+            transform: translateY(0);
+        }
+        
+        .connection-status.online {
+            background-color: #27ae60;
+        }
+        
+        .connection-status.offline {
+            background-color: #e74c3c;
+        }
     </style>
 </head>
 <body>
+    <div class="connection-status" id="connection-status"></div>
+    
     <div class="chat-container">
         <div class="chat-header">Asistente de Salud Pulmonar</div>
         
@@ -353,9 +457,47 @@
             const userInput = document.getElementById('user-input');
             const sendButton = document.getElementById('send-button');
             const newMessageIndicator = document.getElementById('new-message-indicator');
+            const connectionStatus = document.getElementById('connection-status');
             
             let isAtBottom = true;
             let typingIndicator = null;
+            let chatHistory = [];
+            let isOnline = true;
+            
+            // Cargar historial desde localStorage
+            function loadChatHistory() {
+                const savedHistory = localStorage.getItem('lungHealthChatHistory');
+                if (savedHistory) {
+                    try {
+                        chatHistory = JSON.parse(savedHistory);
+                        
+                        // Limpiar mensajes actuales excepto el de bienvenida
+                        const welcomeMessage = chatMessages.querySelector('.welcome-message');
+                        chatMessages.innerHTML = '';
+                        if (welcomeMessage) {
+                            chatMessages.appendChild(welcomeMessage);
+                        }
+                        
+                        // Reconstruir el historial de mensajes
+                        chatHistory.forEach(msg => {
+                            addMessageToDOM(msg.sender, msg.content, msg.isBot, msg.options, msg.progress, msg.timestamp, true);
+                        });
+                        
+                        scrollToBottom();
+                    } catch (e) {
+                        console.error('Error al cargar el historial del chat:', e);
+                    }
+                }
+            }
+            
+            // Guardar historial en localStorage
+            function saveChatHistory() {
+                try {
+                    localStorage.setItem('lungHealthChatHistory', JSON.stringify(chatHistory));
+                } catch (e) {
+                    console.error('Error al guardar el historial del chat:', e);
+                }
+            }
             
             // Función para verificar si el scroll está al final
             function checkScrollPosition() {
@@ -405,13 +547,17 @@
                 }
             }
             
-            // Función para agregar un mensaje al chat
-            function addMessage(sender, message, isBot = false, options = null, progress = null) {
+            // Función para agregar un mensaje al DOM
+            function addMessageToDOM(sender, message, isBot = false, options = null, progress = null, timestamp = null, fromHistory = false) {
                 const messageDiv = document.createElement('div');
                 messageDiv.className = `message ${isBot ? 'bot-message' : 'user-message'}`;
                 
                 // Procesar saltos de línea y emojis
                 message = message.replace(/\n/g, '<br>');
+                
+                // Usar timestamp proporcionado o crear uno nuevo
+                const messageTime = timestamp ? new Date(timestamp) : new Date();
+                const timeString = messageTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 
                 let messageContent = `
                     <div class="message-sender">${sender}</div>
@@ -432,17 +578,19 @@
                     messageContent += `<div class="progress-indicator">${progress}</div>`;
                 }
                 
-                messageContent += `<div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>`;
+                messageContent += `<div class="message-time">${timeString}</div>`;
                 
                 messageDiv.innerHTML = messageContent;
                 
-                // Ocultar indicador de typing si existe
-                hideTypingIndicator();
+                // Ocultar indicador de typing si existe y no estamos cargando desde el historial
+                if (!fromHistory) {
+                    hideTypingIndicator();
+                }
                 
                 chatMessages.appendChild(messageDiv);
                 
-                // Scroll automático solo si estaba al final
-                if (isAtBottom) {
+                // Scroll automático solo si estaba al final y no estamos cargando desde el historial
+                if (isAtBottom && !fromHistory) {
                     scrollToBottom();
                 }
                 
@@ -458,6 +606,27 @@
                         });
                     }, 100);
                 }
+            }
+            
+            // Función para agregar un mensaje al chat y al historial
+            function addMessage(sender, message, isBot = false, options = null, progress = null) {
+                const timestamp = new Date().toISOString();
+                
+                // Agregar al historial
+                chatHistory.push({
+                    sender: sender,
+                    content: message,
+                    isBot: isBot,
+                    options: options,
+                    progress: progress,
+                    timestamp: timestamp
+                });
+                
+                // Guardar historial
+                saveChatHistory();
+                
+                // Agregar al DOM
+                addMessageToDOM(sender, message, isBot, options, progress, timestamp);
             }
             
             // Enviar mensaje al presionar Enter o el botón
@@ -509,11 +678,30 @@
                             }
                             
                             resultDiv.classList.add(riskClass);
+                            
+                            const timestamp = new Date().toISOString();
+                            const timeString = new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                            
                             resultDiv.innerHTML = `
                                 <div class="message-sender">Asistente</div>
                                 <div class="message-content">${data.bot_response.replace(/\n/g, '<br>')}</div>
-                                <div class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                                <div class="message-time">${timeString}</div>
                             `;
+                            
+                            // Agregar al historial
+                            chatHistory.push({
+                                sender: 'Asistente',
+                                content: data.bot_response,
+                                isBot: true,
+                                options: null,
+                                progress: null,
+                                timestamp: timestamp,
+                                isRiskResult: true,
+                                riskClass: riskClass
+                            });
+                            
+                            // Guardar historial
+                            saveChatHistory();
                             
                             chatMessages.appendChild(resultDiv);
                             
@@ -528,9 +716,26 @@
                 })
                 .catch(error => {
                     hideTypingIndicator();
-                    addMessage('Asistente', 'Lo siento, hubo un error al procesar tu mensaje.', true);
+                    addMessage('Asistente', 'Lo siento, hubo un error al procesar tu mensaje. Por favor, verifica tu conexión a internet.', true);
                     console.error('Error:', error);
                 });
+            }
+            
+            // Manejo de estado de conexión
+            function updateOnlineStatus() {
+                isOnline = navigator.onLine;
+                
+                if (isOnline) {
+                    connectionStatus.textContent = 'Conexión restaurada';
+                    connectionStatus.className = 'connection-status show online';
+                    
+                    setTimeout(() => {
+                        connectionStatus.classList.remove('show');
+                    }, 3000);
+                } else {
+                    connectionStatus.textContent = 'Sin conexión. Los mensajes se guardarán localmente.';
+                    connectionStatus.className = 'connection-status show offline';
+                }
             }
             
             // Event Listeners
@@ -548,6 +753,10 @@
             // Verificar posición del scroll
             chatMessages.addEventListener('scroll', checkScrollPosition);
             
+            // Eventos de conexión
+            window.addEventListener('online', updateOnlineStatus);
+            window.addEventListener('offline', updateOnlineStatus);
+            
             // Auto-enfocar el input
             userInput.focus();
             
@@ -556,10 +765,15 @@
                 userInput.focus();
             });
             
+            // Cargar historial al iniciar
+            loadChatHistory();
+            
             // Scroll inicial al final
             setTimeout(scrollToBottom, 100);
+            
+            // Verificar estado de conexión inicial
+            updateOnlineStatus();
         });
     </script>
 </body>
 </html>
-
