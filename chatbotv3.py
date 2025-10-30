@@ -12,6 +12,7 @@ from collections import defaultdict
 import pickle
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
+import unicodedata
 
 # -----------------------------
 # Configuración general
@@ -21,6 +22,19 @@ logging.basicConfig(level=logging.INFO,
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default-secret-key')
+
+
+def normalize_text(text):
+    """
+    Normaliza el texto eliminando tildes y convirtiendo a minúsculas.
+    """
+    if not isinstance(text, str):
+        return text
+    # Normaliza el texto (NFKD separa caracteres y diacríticos)
+    text = unicodedata.normalize('NFKD', text)
+    # Filtra solo los caracteres que no son diacríticos
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    return text.lower().strip()
 
 
 class LungHealthChatbot:
@@ -98,14 +112,15 @@ class LungHealthChatbot:
             self.qa_dict = dict(zip(self.qa_data['pregunta'], self.qa_data['respuesta']))
             self.intent_dict = dict(zip(self.qa_data['pregunta'], self.qa_data['intencion']))
 
-            # Índice de entidades
+            # Índice de entidades (normalizado sin tildes)
             self.entity_to_questions = defaultdict(list)
             for idx, row in self.qa_data.iterrows():
                 entities = row['entidades_lista']
                 if isinstance(entities, list):
                     for entity in entities:
                         if entity and isinstance(entity, str):
-                            clean_entity = entity.strip().lower()
+                            # Normalizar entidad (sin tildes)
+                            clean_entity = normalize_text(entity)
                             self.entity_to_questions[clean_entity].append({
                                 'index': idx,
                                 'pregunta': row['pregunta'],
@@ -578,17 +593,22 @@ class LungHealthChatbot:
             ]
 
     def _extract_entities(self, query):
-        """Extraer entidades de la consulta."""
+        """Extraer entidades de la consulta (ignorando tildes)."""
         try:
-            query_lower = query.lower().strip()
+            # Normalizar la consulta (sin tildes)
+            query_normalized = normalize_text(query)
             found_entities = set()
 
+            # Buscar entidades en el texto normalizado
             for entity in self.entity_to_questions.keys():
-                if f" {entity} " in f" {query_lower} ":
+                entity_normalized = normalize_text(entity)
+
+                # Buscar coincidencias de palabras completas
+                if f" {entity_normalized} " in f" {query_normalized} ":
                     found_entities.add(entity)
-                elif entity in query_lower.split():
+                elif entity_normalized in query_normalized.split():
                     found_entities.add(entity)
-                elif any(part in query_lower for part in entity.split('_')):
+                elif any(part in query_normalized for part in entity_normalized.split('_')):
                     found_entities.add(entity)
 
             return list(found_entities)
@@ -598,14 +618,16 @@ class LungHealthChatbot:
             return []
 
     def find_best_match(self, query):
-        """Encontrar la mejor coincidencia para la consulta."""
+        """Encontrar la mejor coincidencia para la consulta (ignorando tildes)."""
         try:
-            query_lower = query.lower().strip()
-            logging.info(f"🔍 Buscando match para: '{query}'")
+            # Normalizar query (sin tildes)
+            query_normalized = normalize_text(query)
+            logging.info(f"🔍 Buscando match para: '{query}' (normalizado: '{query_normalized}')")
 
-            # 1. Búsqueda exacta
+            # 1. Búsqueda exacta (con texto normalizado)
             for i, question in enumerate(self.qa_data['pregunta']):
-                if query_lower == question.lower():
+                question_normalized = normalize_text(question)
+                if query_normalized == question_normalized:
                     logging.info(f"✅ Match exacto encontrado: {question}")
                     return {
                         "pregunta": question,
@@ -614,7 +636,7 @@ class LungHealthChatbot:
                         "tipo": "exacta"
                     }
 
-            # 2. Búsqueda por entidades
+            # 2. Búsqueda por entidades (con texto normalizado)
             entities = self._extract_entities(query)
             logging.info(f"📊 Entidades encontradas en query: {entities}")
 
@@ -634,9 +656,13 @@ class LungHealthChatbot:
                     if not isinstance(question_entities, list):
                         continue
 
-                    matching_entities = sum(
-                        1 for entity in entities if any(entity in str(e).lower() for e in question_entities))
-                    total_query_entities = len(entities)
+                    # Normalizar entidades para comparación
+                    question_entities_normalized = [normalize_text(e) for e in question_entities if isinstance(e, str)]
+                    query_entities_normalized = [normalize_text(e) for e in entities]
+
+                    matching_entities = sum(1 for entity in query_entities_normalized
+                                            if any(entity in e for e in question_entities_normalized))
+                    total_query_entities = len(query_entities_normalized)
 
                     entity_score = matching_entities / total_query_entities if total_query_entities > 0 else 0
 
@@ -655,12 +681,13 @@ class LungHealthChatbot:
                         f"✅ Mejor match por entidades: {best_match['pregunta']} (score: {best_match['score']:.2f})")
                     return best_match
 
-            # 3. Búsqueda por similitud
+            # 3. Búsqueda por similitud (con texto normalizado)
             best_similarity_match = None
             best_similarity_score = 0
 
             for i, question in enumerate(self.qa_data['pregunta']):
-                similarity = difflib.SequenceMatcher(None, query_lower, question.lower()).ratio()
+                question_normalized = normalize_text(question)
+                similarity = difflib.SequenceMatcher(None, query_normalized, question_normalized).ratio()
 
                 if similarity > best_similarity_score and similarity > 0.5:
                     best_similarity_score = similarity
@@ -700,10 +727,11 @@ class LungHealthChatbot:
                 'type': 'user'
             })
 
-            lower_message = message.lower()
+            # Normalizar para comandos (sin tildes)
+            lower_message = normalize_text(message)
 
-            # Comandos especiales
-            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluación']):
+            # Comandos especiales (ahora funcionan con y sin tildes)
+            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluacion']):
                 risk_start = self.start_risk_assessment()
                 response = risk_start
                 response['bot_response'] = f"🔍 {risk_start['question']}"
@@ -739,7 +767,7 @@ Confianza del modelo: {result['confidence']}
 💡 _Esta evaluación es informativa y no reemplaza la consulta médica profesional. Consulta siempre con un especialista._"""
                     }
 
-            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos días', 'buenas']):
+            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos dias', 'buenas']):
                 response = {'bot_response': self.get_welcome_message()}
             elif any(cmd in lower_message for cmd in ['ayuda', 'comandos']):
                 response = {'bot_response': self.get_help_message()}
@@ -901,4 +929,5 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
 
