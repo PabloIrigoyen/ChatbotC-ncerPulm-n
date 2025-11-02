@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -465,55 +466,87 @@
             let chatHistory = [];
             let isOnline = true;
             
-            // Clave para identificar si es una recarga de página
-            const PAGE_RELOAD_KEY = 'chatbot_page_reload';
+            // Claves para el almacenamiento
+            const CHAT_HISTORY_KEY = 'lungHealthChatHistory';
+            const SESSION_START_KEY = 'chatSessionStart';
             
-            // Verificar si es una recarga de página
-            const isPageReload = sessionStorage.getItem(PAGE_RELOAD_KEY) === 'true';
-            
-            // Marcar que la página se está recargando
-            sessionStorage.setItem(PAGE_RELOAD_KEY, 'true');
+            // Inicializar o recuperar sesión
+            function initializeSession() {
+                const sessionStart = sessionStorage.getItem(SESSION_START_KEY);
+                
+                if (!sessionStart) {
+                    // Nueva sesión - establecer timestamp de inicio
+                    sessionStorage.setItem(SESSION_START_KEY, Date.now().toString());
+                    // Limpiar cualquier historial previo
+                    sessionStorage.removeItem(CHAT_HISTORY_KEY);
+                    chatHistory = [];
+                } else {
+                    // Sesión existente - cargar historial
+                    loadChatHistory();
+                }
+            }
             
             // Cargar historial desde sessionStorage
             function loadChatHistory() {
-                // Si es una recarga de página, mantener el historial
-                if (isPageReload) {
-                    const savedHistory = sessionStorage.getItem('lungHealthChatHistory');
-                    if (savedHistory) {
-                        try {
-                            chatHistory = JSON.parse(savedHistory);
-                            
-                            // Limpiar mensajes actuales excepto el de bienvenida
-                            const welcomeMessage = chatMessages.querySelector('.welcome-message');
-                            chatMessages.innerHTML = '';
-                            if (welcomeMessage) {
-                                chatMessages.appendChild(welcomeMessage);
-                            }
-                            
-                            // Reconstruir el historial de mensajes
-                            chatHistory.forEach(msg => {
-                                addMessageToDOM(msg.sender, msg.content, msg.isBot, msg.options, msg.progress, msg.timestamp, true);
-                            });
-                            
-                            scrollToBottom();
-                        } catch (e) {
-                            console.error('Error al cargar el historial del chat:', e);
+                const savedHistory = sessionStorage.getItem(CHAT_HISTORY_KEY);
+                if (savedHistory) {
+                    try {
+                        chatHistory = JSON.parse(savedHistory);
+                        
+                        // Limpiar mensajes actuales excepto el de bienvenida
+                        const welcomeMessage = chatMessages.querySelector('.welcome-message');
+                        chatMessages.innerHTML = '';
+                        if (welcomeMessage) {
+                            chatMessages.appendChild(welcomeMessage);
                         }
+                        
+                        // Reconstruir el historial de mensajes
+                        chatHistory.forEach(msg => {
+                            addMessageToDOM(msg.sender, msg.content, msg.isBot, msg.options, msg.progress, msg.timestamp, true);
+                        });
+                        
+                        scrollToBottom();
+                    } catch (e) {
+                        console.error('Error al cargar el historial del chat:', e);
+                        chatHistory = [];
                     }
-                } else {
-                    // Si no es una recarga, limpiar el historial
-                    sessionStorage.removeItem('lungHealthChatHistory');
-                    chatHistory = [];
                 }
             }
             
             // Guardar historial en sessionStorage
             function saveChatHistory() {
                 try {
-                    sessionStorage.setItem('lungHealthChatHistory', JSON.stringify(chatHistory));
+                    sessionStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(chatHistory));
                 } catch (e) {
                     console.error('Error al guardar el historial del chat:', e);
                 }
+            }
+            
+            // Manejar el cierre real de la pestaña
+            function setupBeforeUnloadHandler() {
+                let beforeUnloadFired = false;
+                
+                window.addEventListener('beforeunload', function() {
+                    beforeUnloadFired = true;
+                    // Esto se ejecutará cuando se cierre la pestaña
+                    sessionStorage.removeItem(SESSION_START_KEY);
+                    sessionStorage.removeItem(CHAT_HISTORY_KEY);
+                });
+                
+                // Detectar recargas usando performance.navigation (deprecado pero funcional)
+                // o PerformanceNavigationTiming
+                window.addEventListener('load', function() {
+                    // Si beforeunload no se disparó, es una recarga
+                    setTimeout(() => {
+                        if (!beforeUnloadFired) {
+                            // Es una recarga, mantener la sesión
+                            const currentSession = sessionStorage.getItem(SESSION_START_KEY);
+                            if (!currentSession) {
+                                sessionStorage.setItem(SESSION_START_KEY, Date.now().toString());
+                            }
+                        }
+                    }, 100);
+                });
             }
             
             // Función para verificar si el scroll está al final
@@ -755,12 +788,6 @@
                 }
             }
             
-            // Manejar el cierre de la ventana/pestaña
-            function handleBeforeUnload() {
-                // Limpiar la marca de recarga para que al abrir nuevamente se borre el historial
-                sessionStorage.removeItem(PAGE_RELOAD_KEY);
-            }
-            
             // Event Listeners
             sendButton.addEventListener('click', sendMessage);
             
@@ -780,9 +807,6 @@
             window.addEventListener('online', updateOnlineStatus);
             window.addEventListener('offline', updateOnlineStatus);
             
-            // Evento para manejar el cierre de la ventana
-            window.addEventListener('beforeunload', handleBeforeUnload);
-            
             // Auto-enfocar el input
             userInput.focus();
             
@@ -791,8 +815,9 @@
                 userInput.focus();
             });
             
-            // Cargar historial al iniciar
-            loadChatHistory();
+            // Inicializar sesión y manejadores
+            initializeSession();
+            setupBeforeUnloadHandler();
             
             // Scroll inicial al final
             setTimeout(scrollToBottom, 100);
