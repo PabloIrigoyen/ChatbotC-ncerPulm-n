@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Asistente de Salud Pulmonar</title>
     <style>
+        /* Todos los estilos CSS anteriores se mantienen igual */
         * {
             margin: 0;
             padding: 0;
@@ -464,36 +465,52 @@
             let chatHistory = [];
             let isOnline = true;
             
-            // Cargar historial desde localStorage
+            // Clave para identificar si es una recarga de página
+            const PAGE_RELOAD_KEY = 'chatbot_page_reload';
+            
+            // Verificar si es una recarga de página
+            const isPageReload = sessionStorage.getItem(PAGE_RELOAD_KEY) === 'true';
+            
+            // Marcar que la página se está recargando
+            sessionStorage.setItem(PAGE_RELOAD_KEY, 'true');
+            
+            // Cargar historial desde sessionStorage
             function loadChatHistory() {
-                const savedHistory = localStorage.getItem('lungHealthChatHistory');
-                if (savedHistory) {
-                    try {
-                        chatHistory = JSON.parse(savedHistory);
-                        
-                        // Limpiar mensajes actuales excepto el de bienvenida
-                        const welcomeMessage = chatMessages.querySelector('.welcome-message');
-                        chatMessages.innerHTML = '';
-                        if (welcomeMessage) {
-                            chatMessages.appendChild(welcomeMessage);
+                // Si es una recarga de página, mantener el historial
+                if (isPageReload) {
+                    const savedHistory = sessionStorage.getItem('lungHealthChatHistory');
+                    if (savedHistory) {
+                        try {
+                            chatHistory = JSON.parse(savedHistory);
+                            
+                            // Limpiar mensajes actuales excepto el de bienvenida
+                            const welcomeMessage = chatMessages.querySelector('.welcome-message');
+                            chatMessages.innerHTML = '';
+                            if (welcomeMessage) {
+                                chatMessages.appendChild(welcomeMessage);
+                            }
+                            
+                            // Reconstruir el historial de mensajes
+                            chatHistory.forEach(msg => {
+                                addMessageToDOM(msg.sender, msg.content, msg.isBot, msg.options, msg.progress, msg.timestamp, true);
+                            });
+                            
+                            scrollToBottom();
+                        } catch (e) {
+                            console.error('Error al cargar el historial del chat:', e);
                         }
-                        
-                        // Reconstruir el historial de mensajes
-                        chatHistory.forEach(msg => {
-                            addMessageToDOM(msg.sender, msg.content, msg.isBot, msg.options, msg.progress, msg.timestamp, true);
-                        });
-                        
-                        scrollToBottom();
-                    } catch (e) {
-                        console.error('Error al cargar el historial del chat:', e);
                     }
+                } else {
+                    // Si no es una recarga, limpiar el historial
+                    sessionStorage.removeItem('lungHealthChatHistory');
+                    chatHistory = [];
                 }
             }
             
-            // Guardar historial en localStorage
+            // Guardar historial en sessionStorage
             function saveChatHistory() {
                 try {
-                    localStorage.setItem('lungHealthChatHistory', JSON.stringify(chatHistory));
+                    sessionStorage.setItem('lungHealthChatHistory', JSON.stringify(chatHistory));
                 } catch (e) {
                     console.error('Error al guardar el historial del chat:', e);
                 }
@@ -738,6 +755,12 @@
                 }
             }
             
+            // Manejar el cierre de la ventana/pestaña
+            function handleBeforeUnload() {
+                // Limpiar la marca de recarga para que al abrir nuevamente se borre el historial
+                sessionStorage.removeItem(PAGE_RELOAD_KEY);
+            }
+            
             // Event Listeners
             sendButton.addEventListener('click', sendMessage);
             
@@ -756,6 +779,9 @@
             // Eventos de conexión
             window.addEventListener('online', updateOnlineStatus);
             window.addEventListener('offline', updateOnlineStatus);
+            
+            // Evento para manejar el cierre de la ventana
+            window.addEventListener('beforeunload', handleBeforeUnload);
             
             // Auto-enfocar el input
             userInput.focus();
