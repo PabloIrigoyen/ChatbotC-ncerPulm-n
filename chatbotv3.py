@@ -5,14 +5,12 @@ import spacy
 import difflib
 import logging
 import joblib
+import torch
+import torch.nn as nn
 from flask import Flask, render_template, request, jsonify
 from datetime import datetime
 import random
 from collections import defaultdict
-import pickle
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-import unicodedata
 
 # -----------------------------
 # Configuración general
@@ -24,36 +22,189 @@ app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default-secret-key')
 
 
-def normalize_text(text):
-    """
-    Normaliza el texto eliminando tildes y convirtiendo a minúsculas.
-    """
-    if not isinstance(text, str):
+# Clase GloVeEmbeddings para cargar los embeddings guardados
+class GloVeEmbeddings:
+    """Clase para manejar embeddings GloVe desde archivos guardados"""
+
+    def __init__(self, embeddings_dict=None):
+        self.word_vectors = embeddings_dict if embeddings_dict else {}
+        self.embedding_dim = 300  # Dimensión estándar de GloVe
+
+    def get_word_embedding(self, word):
+        """Obtener embedding para una palabra"""
+        word_lower = word.lower()
+        if word_lower in self.word_vectors:
+            return self.word_vectors[word_lower]
+        else:
+            # Embedding para palabras desconocidas (vector cero)
+            return np.zeros(self.embedding_dim)
+
+    def get_sentence_embedding(self, tokens, method='mean'):
+        """Obtener embedding para una oración"""
+        if not tokens:
+            return np.zeros(self.embedding_dim)
+
+        embeddings = [self.get_word_embedding(token) for token in tokens]
+
+        if method == 'mean':
+            return np.mean(embeddings, axis=0)
+        elif method == 'sum':
+            return np.sum(embeddings, axis=0)
+        else:
+            return np.mean(embeddings, axis=0)
+
+
+# Arquitectura del modelo neuronal
+class HighAccuracyLungCancerClassifier(nn.Module):
+    def __init__(self, input_dim=300, hidden_dims=[512, 512, 256, 128], num_classes=4,
+                 dropout_rate=0.4, use_batch_norm=True):
+        super(HighAccuracyLungCancerClassifier, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.num_classes = num_classes
+
+        layers = []
+        current_dim = input_dim
+
+        for i, hidden_dim in enumerate(hidden_dims):
+            layers.append(nn.Linear(current_dim, hidden_dim))
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            current_dim = hidden_dim
+
+        self.feature_extractor = nn.Sequential(*layers)
+        self.output_layer = nn.Linear(current_dim, num_classes)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.constant_(module.bias, 0)
+
+    def forward(self, x):
+        features = self.feature_extractor(x)
+        logits = self.output_layer(features)
+        return logits
+
+
+class AdvancedMedicalPreprocessor:
+    def __init__(self):
+        try:
+            self.nlp = spacy.load("es_core_news_sm")
+        except OSError:
+            print("Descargando modelo spaCy español...")
+            import subprocess
+            import sys
+            subprocess.run([sys.executable, "-m", "spacy", "download", "es_core_news_sm"])
+            self.nlp = spacy.load("es_core_news_sm")
+
+        from nltk.corpus import stopwords
+        self.stop_words = set(stopwords.words('spanish'))
+        additional_stopwords = {'vez', 'tal', 'etc', 'qué', 'cómo', 'dónde', 'cuándo', 'porqué', 'cual'}
+        self.stop_words.update(additional_stopwords)
+
+        self.medical_terms = {
+            'cáncer', 'pulmón', 'síntoma', 'diagnóstico', 'tratamiento', 'prevención',
+            'tabaquismo', 'radiografía', 'tomografía', 'biopsia', 'quimioterapia',
+            'radioterapia', 'inmunoterapia', 'metástasis', 'tumor', 'célula',
+            'epitelial', 'adenocarcinoma', 'carcinoma', 'neoplasia', 'broncoscopia',
+            'toracoscopia', 'oncólogo', 'neumólogo', 'patología', 'estadio',
+            'pronóstico', 'supervivencia', 'mortalidad', 'incidencia', 'prevalencia',
+            'pulmonar', 'respiratorio', 'alveolos', 'bronquios', 'pleura',
+            'linfático', 'histología', 'citología', 'biomarcador', 'mutación',
+            'microcítico', 'no_microcítico', 'carcinoide', 'escamosas', 'neuroendocrino',
+            'radón', 'asbesto', 'amianto', 'contaminación', 'fumador_pasivo',
+            'toracocentesis', 'mediastinoscopia', 'esputo', 'ganglios_linfáticos',
+            'lobectomía', 'neumonectomía', 'criocirugía', 'electrocauterización',
+            'pancoast', 'paraneoplásicos', 'antidiurética', 'cushing', 'disfagia',
+            'citopatológico', 'percutánea', 'inmunohistoquímica', 'oligometastásico',
+            'indiferenciado', 'neuroendocrino', 'escamosas', 'carcinoide',
+            'pulmonares', 'respiratorios', 'oncológico', 'clínico', 'médico',
+            'paciente', 'enfermedad', 'salud', 'hospital', 'consulta'
+        }
+
+    def normalize_text(self, text):
+        if not isinstance(text, str) or pd.isna(text):
+            return ""
+
+        text = text.lower()
+        import re
+        text = re.sub(r'https?://\S+|www\.\S+', '', text)
+        text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', text)
+        text = re.sub(r'[^\w\sáéíóúñüÁÉÍÓÚÑÜ]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
         return text
-    # Normaliza el texto (NFKD separa caracteres y diacríticos)
-    text = unicodedata.normalize('NFKD', text)
-    # Filtra solo los caracteres que no son diacríticos
-    text = ''.join(c for c in text if not unicodedata.combining(c))
-    return text.lower().strip()
+
+    def lemmatize_text(self, text):
+        doc = self.nlp(text)
+        lemmas = []
+
+        for token in doc:
+            if token.text.lower() in self.medical_terms:
+                lemmas.append(token.text.lower())
+            elif not token.is_stop and not token.is_punct and not token.is_space:
+                lemma = token.lemma_.lower().strip()
+                if len(lemma) > 1 and lemma not in self.stop_words:
+                    lemmas.append(lemma)
+
+        return lemmas
+
+    def preprocess_text(self, text):
+        try:
+            normalized_text = self.normalize_text(text)
+            lemmas = self.lemmatize_text(normalized_text)
+
+            filtered_lemmas = []
+            for lemma in lemmas:
+                if len(lemma) >= 2 or lemma in self.medical_terms:
+                    filtered_lemmas.append(lemma)
+
+            return {
+                'original_text': text,
+                'normalized_text': normalized_text,
+                'tokens': filtered_lemmas,
+                'processed_text': ' '.join(filtered_lemmas) if filtered_lemmas else ''
+            }
+        except Exception as e:
+            print(f"Error en preprocesamiento: {e}")
+            return {
+                'original_text': text,
+                'normalized_text': '',
+                'tokens': [],
+                'processed_text': ''
+            }
 
 
 class LungHealthChatbot:
-    """Chatbot de salud pulmonar especializado con evaluación de riesgo mejorada."""
+    def __init__(self, dataset_path='datasetchatbot_referencias.csv', model_dir='saved_models'):
+        # Inicializar atributos primero
+        self.neural_model = None
+        self.neural_resources = None
+        self.model_data = None
+        self.qa_data = None
+        self.nlp = None
 
-    def __init__(self, dataset_path='datasetchatbot_referencias.csv', model_path='lung_cancer_decision_tree.joblib'):
         try:
             self.nlp = self._load_spacy_model()
             self.load_qa_data(dataset_path)
             self._setup_qa_structures()
-            self.load_prediction_model(model_path)
+            self.load_neural_model(model_dir)
+            self.load_prediction_model('lung_health_model.joblib')
             self.reset_conversation_state()
             logging.info("Chatbot inicializado correctamente")
         except Exception as e:
             logging.error(f"Error inicializando chatbot: {e}")
-            raise
+            # Asegurarse de que los atributos estén definidos incluso si hay error
+            if self.neural_model is None:
+                self.neural_model = None
+            if self.model_data is None:
+                self.model_data = None
 
     def _load_spacy_model(self):
-        """Carga el modelo de lenguaje español de spaCy."""
         try:
             nlp = spacy.load("es_core_news_sm")
             logging.info("Modelo spaCy cargado exitosamente")
@@ -69,8 +220,119 @@ class LungHealthChatbot:
                 nlp = spacy.load("es_core_news_sm")
                 return nlp
 
+    def load_neural_model(self, model_dir):
+        """Cargar modelo neuronal desde los archivos .pkl y .pth"""
+        try:
+            if not os.path.exists(model_dir):
+                logging.warning(f"Directorio de modelo {model_dir} no encontrado.")
+                self.neural_model = None
+                self.neural_resources = None
+                return
+
+            # Cargar embeddings GloVe
+            glove_path = os.path.join(model_dir, 'glove_embeddings.pkl')
+            if os.path.exists(glove_path):
+                glove_embeddings_dict = joblib.load(glove_path)
+                embedding_model = GloVeEmbeddings(glove_embeddings_dict)
+                logging.info("✅ Embeddings GloVe cargados")
+            else:
+                logging.warning("Archivo glove_embeddings.pkl no encontrado")
+                embedding_model = GloVeEmbeddings()
+
+            # Cargar preprocessor y label_encoder desde otros archivos .pkl
+            preprocessor = AdvancedMedicalPreprocessor()
+            label_encoder = None
+
+            # Buscar archivos .pkl adicionales
+            pkl_files = [f for f in os.listdir(model_dir) if f.endswith('.pkl') and f != 'glove_embeddings.pkl']
+            for pkl_file in pkl_files:
+                try:
+                    loaded_data = joblib.load(os.path.join(model_dir, pkl_file))
+                    if hasattr(loaded_data, 'classes_') or (
+                            isinstance(loaded_data, dict) and 'classes_' in loaded_data):
+                        label_encoder = loaded_data
+                        logging.info(f"✅ Label encoder cargado desde {pkl_file}")
+                except:
+                    continue
+            # Crear recursos del modelo
+            self.neural_resources = {
+                'preprocessor': preprocessor,
+                'embedding_model': embedding_model,
+                'label_encoder': label_encoder,
+                'model_config': {
+                    'input_dim': 300,
+                    'hidden_dims': [512, 512, 256, 128],
+                    'num_classes': 4
+                }
+            }
+            # Cargar modelo neuronal
+            model_path = os.path.join(model_dir, 'best_glove_lung_cancer_model.pth')
+            if os.path.exists(model_path):
+                model_config = self.neural_resources['model_config']
+                self.neural_model = HighAccuracyLungCancerClassifier(
+                    input_dim=model_config['input_dim'],
+                    hidden_dims=model_config['hidden_dims'],
+                    num_classes=model_config['num_classes']
+                )
+
+                checkpoint = torch.load(model_path, map_location='cpu')
+                if 'model_state_dict' in checkpoint:
+                    self.neural_model.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    self.neural_model.load_state_dict(checkpoint)
+
+                self.neural_model.eval()
+                logging.info("✅ Modelo neuronal cargado exitosamente")
+            else:
+                logging.warning("Archivo best_glove_lung_cancer_model.pth no encontrado")
+                self.neural_model = None
+
+        except Exception as e:
+            logging.error(f"Error cargando modelo neuronal: {e}")
+            self.neural_model = None
+            self.neural_resources = None
+
+    def classify_intent_neural(self, text):
+        if self.neural_model is None or self.neural_resources is None:
+            return None, 0.0
+
+        try:
+            preprocessor = self.neural_resources['preprocessor']
+            embedding_model = self.neural_resources['embedding_model']
+            label_encoder = self.neural_resources['label_encoder']
+
+            processed = preprocessor.preprocess_text(text)
+            embedding = embedding_model.get_sentence_embedding(processed['tokens'], method='mean')
+
+            if len(embedding) != 300:
+                embedding = np.zeros(300)
+
+            embedding_tensor = torch.tensor(embedding, dtype=torch.float32).unsqueeze(0)
+
+            with torch.no_grad():
+                output = self.neural_model(embedding_tensor)
+                probabilities = torch.softmax(output, dim=1)
+                confidence, predicted = torch.max(probabilities, 1)
+
+                predicted_idx = predicted.cpu().numpy()[0]
+                confidence_value = confidence.item()
+
+            # Si no hay label_encoder, usar índices básicos
+            if label_encoder is not None:
+                if hasattr(label_encoder, 'inverse_transform'):
+                    predicted_label = label_encoder.inverse_transform([predicted_idx])[0]
+                else:
+                    predicted_label = f"clase_{predicted_idx}"
+            else:
+                predicted_label = f"clase_{predicted_idx}"
+
+            return predicted_label, confidence_value
+
+        except Exception as e:
+            logging.error(f"Error en clasificación neuronal: {e}")
+            return None, 0.0
+
     def load_prediction_model(self, model_path):
-        """Cargar modelo de machine learning entrenado."""
         try:
             if not os.path.exists(model_path):
                 logging.warning(f"Modelo {model_path} no encontrado. La evaluación de riesgo no estará disponible.")
@@ -78,65 +340,71 @@ class LungHealthChatbot:
                 return
 
             self.model_data = joblib.load(model_path)
-            logging.info(f"✅ Modelo de ML cargado: {model_path}")
+            logging.info(f"✅ Modelo de ML cargado: {self.model_data.get('mean_accuracy', 'N/A')} accuracy")
 
         except Exception as e:
             logging.error(f"Error cargando modelo ML: {e}")
             self.model_data = None
 
     def load_qa_data(self, filename):
-        """Cargar dataset de preguntas y respuestas."""
         try:
             if not os.path.exists(filename):
                 logging.error(f"Archivo {filename} no encontrado")
-                raise FileNotFoundError(f"Dataset {filename} no encontrado")
+                # Crear dataset básico si no existe
+                self.qa_data = pd.DataFrame({
+                    'pregunta': ['hola', 'evaluar riesgo', 'ayuda'],
+                    'respuesta': [
+                        '¡Hola! Soy tu asistente de salud pulmonar. Puedo ayudarte con información sobre cáncer de pulmón o realizar una evaluación de riesgo.',
+                        'Iniciando evaluación de riesgo...',
+                        'Puedo ayudarte con información sobre cáncer de pulmón o realizar una evaluación de riesgo personalizada.'
+                    ],
+                    'intencion': ['saludo', 'evaluacion_riesgo', 'ayuda'],
+                    'entidades': ['saludo', 'evaluacion', 'ayuda']
+                })
+                logging.warning("Dataset básico creado")
+                return
 
             self.qa_data = pd.read_csv(filename)
             logging.info(f"Dataset cargado: {len(self.qa_data)} preguntas")
 
-            # Limpiar y preparar datos
             for col in ['pregunta', 'respuesta', 'intencion', 'entidades']:
                 self.qa_data[col] = self.qa_data[col].astype(str).str.strip()
 
-            # Procesar entidades
             self.qa_data['entidades_lista'] = self.qa_data['entidades'].str.split('|')
 
         except Exception as e:
             logging.error(f"Error cargando dataset: {e}")
-            raise
+            # Crear dataset básico como fallback
+            self.qa_data = pd.DataFrame({
+                'pregunta': ['hola'],
+                'respuesta': ['¡Hola! Soy tu asistente de salud pulmonar.'],
+                'intencion': ['saludo'],
+                'entidades': ['saludo']
+            })
 
     def _setup_qa_structures(self):
-        """Configurar estructuras de búsqueda."""
         try:
-            # Diccionarios básicos
             self.qa_dict = dict(zip(self.qa_data['pregunta'], self.qa_data['respuesta']))
             self.intent_dict = dict(zip(self.qa_data['pregunta'], self.qa_data['intencion']))
 
-            # Índice de entidades (normalizado sin tildes)
             self.entity_to_questions = defaultdict(list)
             for idx, row in self.qa_data.iterrows():
                 entities = row['entidades_lista']
                 if isinstance(entities, list):
                     for entity in entities:
                         if entity and isinstance(entity, str):
-                            # Normalizar entidad (sin tildes)
-                            clean_entity = normalize_text(entity)
-                            self.entity_to_questions[clean_entity].append({
-                                'index': idx,
-                                'pregunta': row['pregunta'],
-                                'respuesta': row['respuesta'],
-                                'intencion': row['intencion'],
-                                'all_entities': entities
-                            })
+                            self.entity_to_questions[entity.strip().lower()].append(idx)
 
             logging.info("Estructuras de búsqueda configuradas")
 
         except Exception as e:
             logging.error(f"Error configurando estructuras: {e}")
-            raise
+            # Estructuras básicas como fallback
+            self.qa_dict = {}
+            self.intent_dict = {}
+            self.entity_to_questions = defaultdict(list)
 
     def reset_conversation_state(self):
-        """Reiniciar estado de la conversación."""
         self.conversation_history = []
         self.risk_assessment_active = False
         self.waiting_for_pdf_confirmation = False
@@ -145,150 +413,196 @@ class LungHealthChatbot:
         self.risk_responses = {}
 
     def _initialize_risk_questions(self):
-        """Inicializar cuestionario de evaluación de riesgo ampliado."""
+        """CUESTIONARIO MEJORADO basado en el dataset real de cáncer"""
         return [
             {
                 "id": "age",
-                "pregunta": "👤 ¿Cuál es su edad?",
+                "pregunta": "¿Cuál es tu edad? (en años)",
                 "tipo": "numero",
-                "opciones": None
+                "opciones": None,
+                "rango": (0, 100)
             },
             {
                 "id": "gender",
-                "pregunta": "🚻 ¿Cuál es su género?",
+                "pregunta": "¿Cuál es tu género?",
                 "tipo": "opcion",
                 "opciones": ["Masculino", "Femenino"]
             },
             {
                 "id": "air_pollution",
-                "pregunta": "🏭 ¿Cómo calificaría su exposición a la contaminación del aire?\n1-Nula/Mínima 2-Baja 3-Moderada 4-Alta 5-Muy Alta 6-Extremadamente Alta 7-Severa 8-Crítica",
+                "pregunta": "¿Cuál es tu nivel de exposición a la contaminación del aire?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Muy baja", "2 - Baja", "3 - Moderada", "4 - Alta", "5 - Muy alta",
+                             "6 - Extremadamente alta", "7 - Máxima exposición"],
+                "explicacion": "1 = Sin exposición, 7 = Exposición máxima constante"
             },
             {
                 "id": "alcohol_use",
-                "pregunta": "🍷 ¿Cuál es su nivel de consumo de alcohol?\n1-Nunca 2-Ocasional 3-Moderado 4-Regular 5-Frecuente 6-Excesivo 7-Muy Excesivo 8-Crítico",
+                "pregunta": "¿Cuál es tu nivel de consumo de alcohol?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Nunca consumo", "2 - Muy ocasional", "3 - Ocasional", "4 - Moderado", "5 - Regular",
+                             "6 - Frecuente", "7 - Muy frecuente", "8 - Diario"],
+                "explicacion": "Escala del 1 (nunca) al 8 (consumo diario)"
             },
             {
                 "id": "dust_allergy",
-                "pregunta": "🌫️ ¿Tiene alergia al polvo? ¿Cómo la calificaría?\n1-Nula/Mínima 2-Baja 3-Moderada 4-Alta 5-Muy Alta 6-Extremadamente Alta 7-Severa 8-Crítica",
+                "pregunta": "¿Tienes alergia al polvo?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin alergia", "2 - Muy leve", "3 - Leve", "4 - Moderada", "5 - Severa",
+                             "6 - Muy severa", "7 - Alergia extrema"],
+                "explicacion": "1 = No hay alergia, 7 = Alergia muy severa"
             },
             {
                 "id": "occupational_hazards",
-                "pregunta": "👷 ¿Está expuesto a riesgos ocupacionales? (productos químicos, polvo industrial, etc.)\n1-Nula/Mínima 2-Baja 3-Moderada 4-Alta 5-Muy Alta 6-Extremadamente Alta 7-Severa 8-Crítica",
+                "pregunta": "¿Estás expuesto a riesgos ocupacionales (químicos, polvo industrial, etc.)?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin exposición", "2 - Mínima", "3 - Baja", "4 - Moderada", "5 - Alta", "6 - Muy alta",
+                             "7 - Exposición extrema"],
+                "explicacion": "1 = Sin exposición laboral, 7 = Exposición constante a químicos peligrosos"
             },
             {
                 "id": "genetic_risk",
-                "pregunta": "🧬 ¿Tiene antecedentes familiares de cáncer de pulmón? ¿Cómo calificaría su riesgo genético?\n1-Nulo 2-Muy bajo 3-Bajo 4-Moderado 5-Alto 6-Muy alto 7-Extremadamente alto 8-Crítico",
+                "pregunta": "¿Tienes antecedentes familiares de cáncer de pulmón?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin antecedentes", "2 - Muy bajo riesgo", "3 - Bajo riesgo", "4 - Moderado",
+                             "5 - Alto", "6 - Muy alto", "7 - Riesgo genético confirmado"],
+                "explicacion": "1 = Sin antecedentes familiares, 7 = Múltiples familiares con cáncer pulmonar"
             },
             {
                 "id": "chronic_lung_disease",
-                "pregunta": "🫁 ¿Tiene enfermedad pulmonar crónica? (asma, EPOC, etc.)\n1-Ausente 2-Muy leve 3-Leve 4-Moderada 5-Moderadamente severa 6-Severa 7-Muy severa 8-Crítica",
+                "pregunta": "¿Tienes enfermedad pulmonar crónica (EPOC, asma, etc.)?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin enfermedad", "2 - Muy leve", "3 - Leve", "4 - Moderada", "5 - Severa",
+                             "6 - Muy severa", "7 - Enfermedad pulmonar avanzada"],
+                "explicacion": "1 = Sin enfermedad pulmonar, 7 = Enfermedad pulmonar crónica avanzada"
             },
             {
                 "id": "balanced_diet",
-                "pregunta": "🥗 ¿Cómo calificaría su dieta?\n1-Muy pobre 2-Pobre 3-Regular 4-Adecuada 5-Buena 6-Muy buena 7-Excelente 8-Óptima",
-                "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "pregunta": "¿Cómo calificarías tu dieta balanceada?",
+                "tipo": "escala_inversa",
+                "opciones": ["1 - Muy balanceada", "2 - Balanceada", "3 - Moderadamente balanceada", "4 - Neutral",
+                             "5 - Poco balanceada", "6 - Desbalanceada", "7 - Muy desbalanceada"],
+                "explicacion": "1 = Dieta muy saludable, 7 = Dieta muy poco saludable"
             },
             {
                 "id": "obesity",
-                "pregunta": "⚖️ ¿Cuál es su nivel de obesidad/IMC?\n1-Bajo peso 2-Normal 3-Sobrepeso leve 4-Sobrepeso 5-Obesidad grado I 6-Obesidad grado II 7-Obesidad grado III 8-Obesidad mórbida",
+                "pregunta": "¿Cuál es tu nivel de obesidad/sobrepeso?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Peso normal", "2 - Ligero sobrepeso", "3 - Sobrepeso", "4 - Obesidad grado I",
+                             "5 - Obesidad grado II", "6 - Obesidad grado III", "7 - Obesidad mórbida"],
+                "explicacion": "1 = Peso saludable, 7 = Obesidad severa"
             },
             {
                 "id": "smoking",
-                "pregunta": "🚬 ¿Cuál es su historial de tabaquismo?\n1-Nunca fumó 2-Ex-fumador (>5 años) 3-Ex-fumador (<5 años) 4-Fumador ocasional 5-Fumador moderado 6-Fumador frecuente 7-Fumador intenso 8-Fumador muy intenso",
+                "pregunta": "¿Cuál es tu nivel de tabaquismo?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Nunca he fumado", "2 - Ex-fumador leve", "3 - Ex-fumador moderado",
+                             "4 - Fumador ocasional", "5 - Fumador regular", "6 - Fumador frecuente",
+                             "7 - Fumador empedernido", "8 - Fumador extremo"],
+                "explicacion": "1 = No fumador, 8 = Fumador muy intenso"
             },
             {
                 "id": "passive_smoker",
-                "pregunta": "💨 ¿Está expuesto a humo de segunda mano (fumadores pasivos)?\n1-Nula 2-Mínima 3-Ocasional 4-Regular 5-Frecuente 6-Intensa 7-Muy Intensa 8-Constante",
+                "pregunta": "¿Estás expuesto al humo de segunda mano (fumador pasivo)?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin exposición", "2 - Exposición mínima", "3 - Exposición ocasional",
+                             "4 - Exposición regular", "5 - Exposición frecuente", "6 - Exposición muy frecuente",
+                             "7 - Exposición constante"],
+                "explicacion": "1 = Sin exposición al humo, 7 = Exposición constante al humo"
             },
             {
                 "id": "chest_pain",
-                "pregunta": "💓 ¿Experimenta dolor en el pecho?\n1-Ausente 2-Muy leve/ocasional 3-Leve 4-Moderado 5-Moderadamente severo 6-Severo 7-Muy severo 8-Debilitante 9-Extremo",
+                "pregunta": "¿Experimentas dolor en el pecho?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin dolor", "2 - Muy leve", "3 - Leve", "4 - Moderado", "5 - Moderado-severo",
+                             "6 - Severo", "7 - Muy severo", "8 - Dolor incapacitante"],
+                "explicacion": "1 = Sin dolor torácico, 8 = Dolor muy intenso"
             },
             {
                 "id": "coughing_blood",
-                "pregunta": "🩸 ¿Ha tenido tos con sangre?\n1-Ausente 2-Muy rara 3-Ocasional 4-Intermitente 5-Frecuente 6-Muy frecuente 7-Diaria 8-Múltiples veces al día 9-Constante",
+                "pregunta": "¿Has tosido con sangre?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Nunca", "2 - Muy raramente", "3 - Raramente", "4 - Ocasionalmente",
+                             "5 - Frecuentemente", "6 - Muy frecuentemente", "7 - Constantemente",
+                             "8 - Hemoptisis severa"],
+                "explicacion": "1 = Sin tos con sangre, 8 = Hemoptisis frecuente"
             },
             {
                 "id": "fatigue",
-                "pregunta": "😴 ¿Cómo calificaría su nivel de fatiga?\n1-Ausente 2-Mínima 3-Leve 4-Moderada 5-Notable 6-Severa 7-Muy severa 8-Debilitante 9-Completa",
+                "pregunta": "¿Experimentas fatiga o cansancio?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin fatiga", "2 - Muy leve", "3 - Leve", "4 - Moderada", "5 - Moderada-severa",
+                             "6 - Severa", "7 - Muy severa", "8 - Fatiga incapacitante"],
+                "explicacion": "1 = Sin fatiga, 8 = Fatiga que limita actividades diarias"
             },
             {
                 "id": "weight_loss",
-                "pregunta": "⚖️ ¿Ha experimentado pérdida de peso?\n1-Ninguna 2-Mínima (<2 kg) 3-Leve (2-4 kg) 4-Moderada (5-7 kg) 5-Significativa (8-10 kg) 6-Severa (11-15 kg) 7-Muy severa (16-20 kg) 8-Extrema (21-25 kg) 9-Crítica (>25 kg)",
+                "pregunta": "¿Has experimentado pérdida de peso inexplicable?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin pérdida", "2 - Muy poca", "3 - Leve", "4 - Moderada", "5 - Significativa",
+                             "6 - Muy significativa", "7 - Pérdida extrema"],
+                "explicacion": "1 = Sin pérdida de peso, 7 = Pérdida de peso muy severa"
             },
             {
                 "id": "shortness_breath",
-                "pregunta": "🌬️ ¿Tiene dificultad para respirar?\n1-Ausente 2-Solo con ejercicio intenso 3-Con ejercicio moderado 4-Con actividades diarias 5-Con actividades livianas 6-En reposo ocasional 7-En reposo frecuente 8-En reposo constante 9-Incapacitante",
+                "pregunta": "¿Tienes dificultad para respirar?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin dificultad", "2 - Muy leve", "3 - Leve", "4 - Moderada", "5 - Moderada-severa",
+                             "6 - Severa", "7 - Muy severa", "8 - Incapacitante", "9 - Asfixia"],
+                "explicacion": "1 = Sin dificultad respiratoria, 9 = Dificultad respiratoria extrema"
             },
             {
                 "id": "wheezing",
-                "pregunta": "🎵 ¿Experimenta sibilancias (silbidos al respirar)?\n1-Ausentes 2-Muy raras 3-Ocasionales 4-Intermitentes 5-Frecuentes 6-Muy frecuentes 7-Diarias 8-Constantes leves 9-Constantes severas",
+                "pregunta": "¿Experimentas silbidos al respirar (sibilancias)?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin silbidos", "2 - Muy leves", "3 - Leves", "4 - Moderados", "5 - Moderados-severos",
+                             "6 - Severos", "7 - Muy severos", "8 - Sibilancias constantes"],
+                "explicacion": "1 = Sin sibilancias, 8 = Sibilancias constantes"
             },
             {
                 "id": "swallowing_difficulty",
-                "pregunta": "🥛 ¿Tiene dificultad para tragar?\n1-Ausente 2-Muy leve 3-Leve 4-Moderada 5-Moderadamente severa 6-Severa 7-Muy severa 8-Solo líquidos 9-Incapacitante",
+                "pregunta": "¿Tienes dificultad para tragar?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin dificultad", "2 - Muy leve", "3 - Leve", "4 - Moderada", "5 - Moderada-severa",
+                             "6 - Severa", "7 - Muy severa"],
+                "explicacion": "1 = Sin dificultad para tragar, 7 = Dificultad severa"
             },
             {
                 "id": "clubbing_finger_nails",
-                "pregunta": "🖐️ ¿Tiene acropaquia (dedos en palillo de tambor)?\n1-Ausente 2-Muy leve 3-Leve 4-Moderada 5-Notable 6-Severa 7-Muy severa 8-Extrema",
+                "pregunta": "¿Has notado cambios en las uñas (engrosamiento, forma de palillo de tambor)?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8"]
+                "opciones": ["1 - Sin cambios", "2 - Muy leves", "3 - Leves", "4 - Moderados", "5 - Moderados-severos",
+                             "6 - Severos", "7 - Muy severos"],
+                "explicacion": "1 = Uñas normales, 7 = Acropaquia (dedos en palillo de tambor) severa"
             },
             {
                 "id": "frequent_cold",
-                "pregunta": "🤧 ¿Con qué frecuencia tiene resfriados?\n1-Muy raros (<1/año) 2-Ocasionales (1-2/año) 3-Regulares (3-4/año) 4-Frecuentes (5-6/año) 5-Muy frecuentes (7-8/año) 6-Constantes (9-10/año) 7-Muy constantes (>10/año)",
+                "pregunta": "¿Tienes resfriados frecuentes?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7"]
+                "opciones": ["1 - Muy raros", "2 - Raros", "3 - Ocasionales", "4 - Regulares", "5 - Frecuentes",
+                             "6 - Muy frecuentes", "7 - Constantes"],
+                "explicacion": "1 = Resfriados muy infrecuentes, 7 = Resfriados constantes"
             },
             {
                 "id": "dry_cough",
-                "pregunta": "🤭 ¿Tiene tos seca?\n1-Ausente 2-Muy ocasional 3-Ocasional 4-Intermitente 5-Frecuente 6-Muy frecuente 7-Constante leve 8-Constante moderada 9-Constante severa",
+                "pregunta": "¿Tienes tos seca?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "opciones": ["1 - Sin tos seca", "2 - Muy ocasional", "3 - Ocasional", "4 - Regular", "5 - Frecuente",
+                             "6 - Muy frecuente", "7 - Tos seca constante"],
+                "explicacion": "1 = Sin tos seca, 7 = Tos seca constante"
             },
             {
                 "id": "snoring",
-                "pregunta": "😴 ¿Ronca?\n1-Ausentes 2-Muy leves/ocasionales 3-Leves 4-Moderados 5-Frecuentes 6-Intensos 7-Muy intensos",
+                "pregunta": "¿Roncas al dormir?",
                 "tipo": "escala",
-                "opciones": ["1", "2", "3", "4", "5", "6", "7"]
+                "opciones": ["1 - Nunca", "2 - Muy raramente", "3 - Ocasionalmente", "4 - Regularmente",
+                             "5 - Frecuentemente", "6 - Muy frecuentemente", "7 - Siempre"],
+                "explicacion": "1 = Sin ronquidos, 7 = Ronquidos constantes"
             }
         ]
 
     def start_risk_assessment(self):
-        """Iniciar evaluación de riesgo."""
+        """Iniciar evaluación de riesgo mejorada"""
         self.risk_assessment_active = True
         self.current_risk_question = 0
         self.risk_responses = {}
@@ -300,30 +614,28 @@ class LungHealthChatbot:
             "question_id": first_question["id"],
             "question_type": first_question["tipo"],
             "options": first_question["opciones"],
-            "progress": f"1/{len(self.risk_questions)}"
+            "explicacion": first_question.get("explicacion", ""),
+            "progress": f"1/{len(self.risk_questions)}",
+            "total_questions": len(self.risk_questions)
         }
 
     def process_risk_response(self, response):
-        """Procesar respuesta del cuestionario de riesgo."""
+        """Procesar respuesta del cuestionario mejorado"""
         if not self.risk_assessment_active:
             return {"error": "No hay evaluación de riesgo activa"}
 
         current_q = self.risk_questions[self.current_risk_question]
 
-        # Validar respuesta según el tipo
-        if current_q["tipo"] == "numero":
-            try:
-                response = int(response)
-                if response < 1 or response > 120:
-                    return {"error": "Por favor ingrese una edad válida entre 1 y 120 años"}
-            except ValueError:
-                return {"error": "Por favor ingrese un número válido para la edad"}
+        # Validar respuesta
+        validated_response = self._validate_response(response, current_q)
+        if not validated_response:
+            return {
+                "type": "validation_error",
+                "message": f"Respuesta inválida. Por favor ingresa una opción válida.",
+                "options": current_q["opciones"]
+            }
 
-        elif current_q["tipo"] in ["escala", "opcion"]:
-            if response not in current_q["opciones"]:
-                return {"error": f"Por favor seleccione una opción válida: {', '.join(current_q['opciones'])}"}
-
-        self.risk_responses[current_q["id"]] = response
+        self.risk_responses[current_q["id"]] = validated_response
 
         # Avanzar a la siguiente pregunta
         self.current_risk_question += 1
@@ -336,220 +648,173 @@ class LungHealthChatbot:
                 "question_id": next_q["id"],
                 "question_type": next_q["tipo"],
                 "options": next_q["opciones"],
-                "progress": f"{self.current_risk_question + 1}/{len(self.risk_questions)}"
+                "explicacion": next_q.get("explicacion", ""),
+                "progress": f"{self.current_risk_question + 1}/{len(self.risk_questions)}",
+                "total_questions": len(self.risk_questions)
             }
         else:
             # Completar evaluación
             return self._complete_risk_assessment()
 
-    def _complete_risk_assessment(self):
-        """Completar evaluación de riesgo y generar resultado."""
+    def _validate_response(self, response, question):
+        """Validar respuesta según el tipo de pregunta"""
         try:
-            self.risk_assessment_active = False
-            logging.info("🏁 Completando evaluación de riesgo...")
-            logging.info(f"📋 Respuestas recolectadas: {self.risk_responses}")
+            if question["tipo"] == "numero":
+                value = int(response)
+                if "rango" in question:
+                    min_val, max_val = question["rango"]
+                    if min_val <= value <= max_val:
+                        return value
+                else:
+                    return value
 
-            # Convertir respuestas a formato del modelo
-            if self.model_data:
-                logging.info("🔍 Usando modelo ML para predicción...")
-                risk_prediction = self._predict_risk()
-            else:
-                logging.info("🔍 Modelo ML no disponible, usando cálculo básico...")
-                risk_prediction = self._calculate_basic_risk()
+            elif question["tipo"] in ["opcion", "escala", "escala_inversa"]:
+                # Buscar coincidencia en opciones
+                for option in question["opciones"]:
+                    if response.lower() in option.lower() or response in option:
+                        # Extraer el valor numérico si existe
+                        if " - " in option:
+                            return int(option.split(" - ")[0])
+                        else:
+                            return option
 
-            # Guardar en historial
-            self.conversation_history.append({
-                'timestamp': datetime.now(),
-                'type': 'risk_assessment_complete',
-                'risk_result': risk_prediction
-            })
+                # Si es un número directo
+                try:
+                    value = int(response)
+                    if 1 <= value <= len(question["opciones"]):
+                        return value
+                except:
+                    pass
 
-            logging.info(f"✅ Evaluación completada exitosamente")
-            return risk_prediction
-
-        except Exception as e:
-            logging.error(f"❌ Error en _complete_risk_assessment: {e}")
-            return {
-                "type": "risk_assessment_result",
-                "risk_level": "MODERADO",
-                "confidence": "Estimación básica",
-                "recommendations": self._get_recommendations("MODERADO"),
-                "based_on_ml": False
-            }
-
-    def _map_response_to_model_input(self):
-        """Mapear respuestas al formato esperado por el modelo."""
-        if not self.model_data:
             return None
 
-        # Mapeo para el modelo de cáncer de pulmón
-        mapping = {
-            'age': lambda x: int(x),
-            'gender': lambda x: 1 if x == "Masculino" else 2,
-            'air_pollution': lambda x: int(x),
-            'alcohol_use': lambda x: int(x),
-            'dust_allergy': lambda x: int(x),
-            'occupational_hazards': lambda x: int(x),
-            'genetic_risk': lambda x: int(x),
-            'chronic_lung_disease': lambda x: int(x),
-            'balanced_diet': lambda x: int(x),
-            'obesity': lambda x: int(x),
-            'smoking': lambda x: int(x),
-            'passive_smoker': lambda x: int(x),
-            'chest_pain': lambda x: int(x),
-            'coughing_blood': lambda x: int(x),
-            'fatigue': lambda x: int(x),
-            'weight_loss': lambda x: int(x),
-            'shortness_breath': lambda x: int(x),
-            'wheezing': lambda x: int(x),
-            'swallowing_difficulty': lambda x: int(x),
-            'clubbing_finger_nails': lambda x: int(x),
-            'frequent_cold': lambda x: int(x),
-            'dry_cough': lambda x: int(x),
-            'snoring': lambda x: int(x)
+        except:
+            return None
+
+    def _complete_risk_assessment(self):
+        """Completar evaluación de riesgo mejorada"""
+        self.risk_assessment_active = False
+
+        # Procesar respuestas para el modelo
+        processed_responses = self._process_responses_for_model()
+
+        if self.model_data:
+            risk_prediction = self._predict_risk_improved(processed_responses)
+        else:
+            risk_prediction = self._calculate_comprehensive_risk(processed_responses)
+
+        # Guardar en historial
+        self.conversation_history.append({
+            'timestamp': datetime.now(),
+            'type': 'risk_assessment_complete',
+            'risk_result': risk_prediction
+        })
+
+        return risk_prediction
+
+    def _process_responses_for_model(self):
+        """Procesar respuestas para el formato del modelo"""
+        processed = {}
+
+        # Mapeo de IDs del cuestionario a nombres de características del dataset
+        feature_mapping = {
+            'age': 'Age',
+            'gender': 'Gender',
+            'air_pollution': 'Air Pollution',
+            'alcohol_use': 'Alcohol use',
+            'dust_allergy': 'Dust Allergy',
+            'occupational_hazards': 'OccuPational Hazards',
+            'genetic_risk': 'Genetic Risk',
+            'chronic_lung_disease': 'chronic Lung Disease',
+            'balanced_diet': 'Balanced Diet',
+            'obesity': 'Obesity',
+            'smoking': 'Smoking',
+            'passive_smoker': 'Passive Smoker',
+            'chest_pain': 'Chest Pain',
+            'coughing_blood': 'Coughing of Blood',
+            'fatigue': 'Fatigue',
+            'weight_loss': 'Weight Loss',
+            'shortness_breath': 'Shortness of Breath',
+            'wheezing': 'Wheezing',
+            'swallowing_difficulty': 'Swallowing Difficulty',
+            'clubbing_finger_nails': 'Clubbing of Finger Nails',
+            'frequent_cold': 'Frequent Cold',
+            'dry_cough': 'Dry Cough',
+            'snoring': 'Snoring'
         }
 
+        for q_id, response in self.risk_responses.items():
+            if q_id in feature_mapping:
+                processed[feature_mapping[q_id]] = response
+
+        return processed
+
+    def _predict_risk_improved(self, responses):
+        """Predicción mejorada de riesgo"""
         try:
+            # Convertir a formato del modelo
             model_input = []
-
-            # Orden esperado por el modelo (basado en el dataset original)
-            expected_order = [
-                'Age', 'Gender', 'Air Pollution', 'Alcohol use', 'Dust Allergy',
-                'OccuPational Hazards', 'Genetic Risk', 'chronic Lung Disease',
-                'Balanced Diet', 'Obesity', 'Smoking', 'Passive Smoker', 'Chest Pain',
-                'Coughing of Blood', 'Fatigue', 'Weight Loss', 'Shortness of Breath',
-                'Wheezing', 'Swallowing Difficulty', 'Clubbing of Finger Nails',
-                'Frequent Cold', 'Dry Cough', 'Snoring'
-            ]
-
-            # Mapear nombres de campos
-            field_mapping = {
-                'age': 'Age',
-                'gender': 'Gender',
-                'air_pollution': 'Air Pollution',
-                'alcohol_use': 'Alcohol use',
-                'dust_allergy': 'Dust Allergy',
-                'occupational_hazards': 'OccuPational Hazards',
-                'genetic_risk': 'Genetic Risk',
-                'chronic_lung_disease': 'chronic Lung Disease',
-                'balanced_diet': 'Balanced Diet',
-                'obesity': 'Obesity',
-                'smoking': 'Smoking',
-                'passive_smoker': 'Passive Smoker',
-                'chest_pain': 'Chest Pain',
-                'coughing_blood': 'Coughing of Blood',
-                'fatigue': 'Fatigue',
-                'weight_loss': 'Weight Loss',
-                'shortness_breath': 'Shortness of Breath',
-                'wheezing': 'Wheezing',
-                'swallowing_difficulty': 'Swallowing Difficulty',
-                'clubbing_finger_nails': 'Clubbing of Finger Nails',
-                'frequent_cold': 'Frequent Cold',
-                'dry_cough': 'Dry Cough',
-                'snoring': 'Snoring'
-            }
-
-            for field in expected_order:
-                # Encontrar la clave correspondiente en las respuestas
-                response_key = None
-                for key, value in field_mapping.items():
-                    if value == field:
-                        response_key = key
-                        break
-
-                if response_key and response_key in self.risk_responses:
-                    value = self.risk_responses[response_key]
-                    mapped_value = mapping[response_key](value)
-                    model_input.append(mapped_value)
-                    logging.info(f"   {field}: '{value}' -> {mapped_value}")
+            for feature in self.model_data['feature_names']:
+                if feature in responses:
+                    model_input.append(responses[feature])
                 else:
-                    logging.warning(f"Campo {field} no encontrado en respuestas, usando valor por defecto")
-                    model_input.append(2)  # Valor por defecto
+                    model_input.append(1)  # Valor por defecto (mínimo riesgo)
 
-            # Convertir a numpy array para el modelo
-            input_array = np.array([model_input])
-            logging.info(f"🎯 Input final para el modelo: {input_array}")
-            return input_array
+            model_input = np.array([model_input])
 
-        except Exception as e:
-            logging.error(f"Error en _map_response_to_model_input: {e}")
-            return None
+            # Escalar datos
+            scaled_input = self.model_data['scaler'].transform(model_input)
 
-    def _predict_risk(self):
-        """Realizar predicción usando el modelo ML."""
-        try:
-            model_input = self._map_response_to_model_input()
-            if model_input is None:
-                logging.warning("No se pudo generar input para el modelo, usando cálculo básico")
-                return self._calculate_basic_risk()
+            # Predecir
+            prediction = self.model_data['model'].predict(scaled_input)[0]
+            probability = self.model_data['model'].predict_proba(scaled_input)[0]
 
-            # Predecir usando el modelo cargado
-            prediction = self.model_data.predict(model_input)[0]
+            # Decodificar resultado
+            if 'label_encoder' in self.model_data:
+                risk_level = self.model_data['label_encoder'].inverse_transform([prediction])[0]
+            else:
+                risk_level = "ALTO" if prediction == 2 else "MEDIO" if prediction == 1 else "BAJO"
 
-            # Si el modelo tiene predict_proba, usarlo para confianza
-            try:
-                probability = self.model_data.predict_proba(model_input)[0]
-                confidence = max(probability)
-                probability_high = probability[1] if len(probability) > 1 else 0.5
-            except:
-                confidence = 0.75
-                probability_high = 0.5
-
-            # Mapear predicción a nivel de riesgo
-            risk_levels = {0: "BAJO", 1: "MEDIO", 2: "ALTO"}
-            risk_level = risk_levels.get(prediction, "MODERADO")
+            confidence = max(probability)
 
             return {
                 "type": "risk_assessment_result",
                 "risk_level": risk_level,
                 "confidence": f"{confidence:.1%}",
-                "probability_high": f"{probability_high:.1%}",
-                "recommendations": self._get_recommendations(risk_level),
-                "based_on_ml": True,
-                "risk_score": self._calculate_risk_score()
+                "probability_high": f"{probability[2]:.1%}" if len(probability) > 2 else "N/A",
+                "probability_medium": f"{probability[1]:.1%}" if len(probability) > 1 else "N/A",
+                "probability_low": f"{probability[0]:.1%}",
+                "recommendations": self._get_improved_recommendations(risk_level, responses),
+                "risk_factors": self._identify_risk_factors(responses),
+                "based_on_ml": True
             }
 
         except Exception as e:
-            logging.error(f"Error en _predict_risk: {e}")
-            return self._calculate_basic_risk()
+            logging.error(f"Error en predicción ML mejorada: {e}")
+            return self._calculate_comprehensive_risk(responses)
 
-    def _calculate_risk_score(self):
-        """Calcular puntuación de riesgo basada en las respuestas."""
-        try:
-            score = 0
-            max_score = len(self.risk_responses) * 9  # Máximo teórico
-
-            for key, value in self.risk_responses.items():
-                if key != 'age' and key != 'gender':
-                    try:
-                        score += int(value)
-                    except:
-                        pass
-
-            risk_percentage = min(100, (score / max_score) * 100)
-            return f"{risk_percentage:.0f}%"
-        except:
-            return "50%"
-
-    def _calculate_basic_risk(self):
-        """Calcular riesgo básico cuando no hay modelo ML."""
+    def _calculate_comprehensive_risk(self, responses):
+        """Cálculo comprehensivo de riesgo basado en puntuaciones"""
         risk_score = 0
-        total_questions = len(self.risk_responses)
+        max_possible_score = 0
 
-        for response in self.risk_responses.values():
-            if isinstance(response, str) and response.isdigit():
-                value = int(response)
-                if value >= 6:  # Valores altos en la escala
-                    risk_score += 2
-                elif value >= 4:  # Valores medios
-                    risk_score += 1
+        # Factores de alto riesgo con pesos
+        high_risk_factors = {
+            'Smoking': 3, 'Air Pollution': 2, 'Genetic Risk': 2,
+            'Coughing of Blood': 3, 'Shortness of Breath': 2
+        }
 
-        risk_percentage = min(100, (risk_score / (total_questions * 2)) * 100)
+        for factor, weight in high_risk_factors.items():
+            if factor in responses:
+                risk_score += responses[factor] * weight
+                max_possible_score += 7 * weight  # Máximo valor 7
+
+        risk_percentage = (risk_score / max_possible_score) * 100 if max_possible_score > 0 else 0
 
         if risk_percentage > 70:
             risk_level = "ALTO"
         elif risk_percentage > 40:
-            risk_level = "MODERADO"
+            risk_level = "MEDIO"
         else:
             risk_level = "BAJO"
 
@@ -557,59 +822,116 @@ class LungHealthChatbot:
             "type": "risk_assessment_result",
             "risk_level": risk_level,
             "risk_score": f"{risk_percentage:.0f}%",
-            "confidence": "Estimación básica",
-            "recommendations": self._get_recommendations(risk_level),
+            "confidence": "Estimación basada en factores de riesgo",
+            "recommendations": self._get_improved_recommendations(risk_level, responses),
+            "risk_factors": self._identify_risk_factors(responses),
             "based_on_ml": False
         }
 
-    def _get_recommendations(self, risk_level):
-        """Generar recomendaciones basadas en el nivel de riesgo."""
+    def _identify_risk_factors(self, responses):
+        """Identificar factores de riesgo específicos"""
+        risk_factors = []
+
+        high_risk_threshold = 5  # Valor >= 5 se considera alto riesgo
+
+        risk_mapping = {
+            'Smoking': 'Tabaquismo',
+            'Air Pollution': 'Contaminación del aire',
+            'Genetic Risk': 'Riesgo genético',
+            'Coughing of Blood': 'Tos con sangre',
+            'Shortness of Breath': 'Dificultad respiratoria',
+            'Occupational Hazards': 'Riesgos laborales',
+            'chronic Lung Disease': 'Enfermedad pulmonar crónica'
+        }
+
+        for factor, spanish_name in risk_mapping.items():
+            if factor in responses and responses[factor] >= high_risk_threshold:
+                risk_factors.append({
+                    'factor': spanish_name,
+                    'level': responses[factor],
+                    'severity': 'ALTO' if responses[factor] >= 6 else 'MODERADO'
+                })
+
+        return risk_factors
+
+    def _get_improved_recommendations(self, risk_level, responses):
+        """Recomendaciones mejoradas y personalizadas"""
+        base_recommendations = [
+            "Consulta con un especialista en neumología",
+            "Realiza controles médicos periódicos",
+            "Mantén un estilo de vida saludable",
+            "Evita la exposición a contaminantes ambientales"
+        ]
+
+        specific_recs = []
+
         if risk_level == "ALTO":
-            return [
-                "🚨 Consulta médica URGENTE con neumólogo",
+            specific_recs = [
+                "🚨 Consulta médica URGENTE** con neumólogo",
                 "💊 Considera realizar una tomografía computarizada de tórax",
                 "🚭 Suspende el tabaquismo inmediatamente si fumas",
                 "🏥 Programa evaluación pulmonar completa",
                 "🔍 Monitorea síntomas regularmente",
-                "🌡️ Evita exposición a contaminantes y humos"
+                "📋 Realiza seguimiento médico cada 3-6 meses"
             ]
-        elif risk_level == "MODERADO":
-            return [
-                "📅 Consulta médica programada con tu médico de cabecera",
-                "🔍 Considera radiografía de tórax en tu próximo chequeo",
-                "🌱 Reduce factores de riesgo modificables",
-                "🚭 Evita la exposición al humo de tabaco",
-                "💪 Mantén un estilo de vida saludable",
-                "📊 Realiza controles médicos anuales"
+        elif risk_level == "MEDIO":
+            specific_recs = [
+                "📅 Consulta médica programada con neumólogo",
+                "🔍 Considera radiografía de tórax anual",
+                "🌱 Reduce factores de riesgo identificados",
+                "💪 Implementa programa de ejercicio regular",
+                "🥗 Mejora hábitos alimenticios",
+                "📊 Monitorea síntomas mensualmente"
             ]
         else:
-            return [
-                "👍 Mantén tus hábitos saludables actuales",
-                "🚭 Evita exposición al humo y contaminantes",
+            specific_recs = [
+                "👍 Mantén hábitos saludables actuales",
+                "🚭 Evita exposición al humo de tabaco",
                 "💪 Realiza ejercicio regularmente",
-                "🥗 Sigue una dieta balanceada rica en frutas y verduras",
-                "😴 Mantén una buena calidad de sueño",
-                "📅 Realiza chequeos médicos preventivos anuales"
+                "🥗 Sigue una dieta balanceada rica en antioxidantes",
+                "🌳 Reduce exposición a contaminantes ambientales",
+                "📝 Realiza chequeo médico anual preventivo"
             ]
 
+        # Recomendaciones específicas basadas en factores de riesgo
+        if 'Smoking' in responses and responses['Smoking'] >= 4:
+            specific_recs.append("🎯 Programa de cesación tabáquica - Busca ayuda profesional para dejar de fumar")
+
+        if 'Air Pollution' in responses and responses['Air Pollution'] >= 5:
+            specific_recs.append("😷 Usa mascarilla** en áreas con alta contaminación")
+
+        if 'Obesity' in responses and responses['Obesity'] >= 4:
+            specific_recs.append("⚖️ Programa de control de peso - Consulta con nutricionista")
+
+        return base_recommendations + specific_recs
+
     def _extract_entities(self, query):
-        """Extraer entidades de la consulta (ignorando tildes)."""
+        """Extraer entidades mejorado con búsqueda más inteligente"""
         try:
-            # Normalizar la consulta (sin tildes)
-            query_normalized = normalize_text(query)
+            query_lower = query.lower().strip()
             found_entities = set()
 
-            # Buscar entidades en el texto normalizado
-            for entity in self.entity_to_questions.keys():
-                entity_normalized = normalize_text(entity)
+            all_entities = set()
+            for entities in self.qa_data['entidades_lista']:
+                if isinstance(entities, list):
+                    for entity in entities:
+                        if entity and isinstance(entity, str):
+                            all_entities.add(entity.strip().lower())
 
-                # Buscar coincidencias de palabras completas
-                if f" {entity_normalized} " in f" {query_normalized} ":
+            # Búsqueda más flexible por palabras clave
+            for entity in all_entities:
+                # Buscar coincidencias parciales
+                if entity in query_lower:
                     found_entities.add(entity)
-                elif entity_normalized in query_normalized.split():
-                    found_entities.add(entity)
-                elif any(part in query_normalized for part in entity_normalized.split('_')):
-                    found_entities.add(entity)
+                else:
+                    # Buscar por palabras individuales
+                    entity_words = entity.split()
+                    if len(entity_words) > 1:
+                        # Si la entidad tiene múltiples palabras, buscar coincidencias parciales
+                        for word in entity_words:
+                            if len(word) > 3 and word in query_lower:
+                                found_entities.add(entity)
+                                break
 
             return list(found_entities)
 
@@ -617,18 +939,49 @@ class LungHealthChatbot:
             logging.error(f"Error extrayendo entidades: {e}")
             return []
 
-    def find_best_match(self, query):
-        """Encontrar la mejor coincidencia para la consulta (ignorando tildes)."""
-        try:
-            # Normalizar query (sin tildes)
-            query_normalized = normalize_text(query)
-            logging.info(f"🔍 Buscando match para: '{query}' (normalizado: '{query_normalized}')")
+    def _improve_similarity_search(self, query, question):
+        """Búsqueda de similitud mejorada"""
+        query_lower = query.lower()
+        question_lower = question.lower()
 
-            # 1. Búsqueda exacta (con texto normalizado)
+        # Similitud básica
+        basic_similarity = difflib.SequenceMatcher(None, query_lower, question_lower).ratio()
+
+        # Bonus por coincidencias de palabras clave médicas
+        medical_keywords = ['cáncer', 'pulmón', 'síntoma', 'diagnóstico', 'tratamiento',
+                            'tabaco', 'fumar', 'tos', 'dolor', 'respirar']
+
+        keyword_bonus = 0
+        for keyword in medical_keywords:
+            if keyword in query_lower and keyword in question_lower:
+                keyword_bonus += 0.1
+
+        return min(1.0, basic_similarity + keyword_bonus)
+
+    def find_best_match(self, query):
+        """Búsqueda mejorada sin interferencia de comandos genéricos"""
+        try:
+            query_lower = query.lower().strip()
+
+            # 1. Primero intentar clasificación neuronal si está disponible
+            if self.neural_model is not None:
+                predicted_intent, confidence = self.classify_intent_neural(query)
+                if predicted_intent and confidence > 0.7:
+                    # Buscar preguntas con esta intención
+                    intent_matches = self.qa_data[self.qa_data['intencion'] == predicted_intent]
+                    if len(intent_matches) > 0:
+                        best_match = intent_matches.iloc[0]
+                        return {
+                            "pregunta": best_match['pregunta'],
+                            "respuesta": best_match['respuesta'],
+                            "score": confidence,
+                            "tipo": f"neuronal_{predicted_intent}",
+                            "confidence": f"{confidence:.2f}"
+                        }
+
+            # 2. Búsqueda exacta
             for i, question in enumerate(self.qa_data['pregunta']):
-                question_normalized = normalize_text(question)
-                if query_normalized == question_normalized:
-                    logging.info(f"✅ Match exacto encontrado: {question}")
+                if query_lower == question.lower():
                     return {
                         "pregunta": question,
                         "respuesta": self.qa_data.iloc[i]['respuesta'],
@@ -636,74 +989,50 @@ class LungHealthChatbot:
                         "tipo": "exacta"
                     }
 
-            # 2. Búsqueda por entidades (con texto normalizado)
-            entities = self._extract_entities(query)
-            logging.info(f"📊 Entidades encontradas en query: {entities}")
-
-            if entities:
-                entity_matches = []
-                all_relevant_questions = set()
-
-                for entity in entities:
-                    if entity in self.entity_to_questions:
-                        for q_info in self.entity_to_questions[entity]:
-                            all_relevant_questions.add(q_info['index'])
-
-                for idx in all_relevant_questions:
-                    row = self.qa_data.iloc[idx]
-                    question_entities = row['entidades_lista']
-
-                    if not isinstance(question_entities, list):
-                        continue
-
-                    # Normalizar entidades para comparación
-                    question_entities_normalized = [normalize_text(e) for e in question_entities if isinstance(e, str)]
-                    query_entities_normalized = [normalize_text(e) for e in entities]
-
-                    matching_entities = sum(1 for entity in query_entities_normalized
-                                            if any(entity in e for e in question_entities_normalized))
-                    total_query_entities = len(query_entities_normalized)
-
-                    entity_score = matching_entities / total_query_entities if total_query_entities > 0 else 0
-
-                    if entity_score > 0.3:
-                        entity_matches.append({
-                            "pregunta": row['pregunta'],
-                            "respuesta": row['respuesta'],
-                            "score": entity_score,
-                            "tipo": f"entidades_{matching_entities}"
-                        })
-
-                if entity_matches:
-                    entity_matches.sort(key=lambda x: x['score'], reverse=True)
-                    best_match = entity_matches[0]
-                    logging.info(
-                        f"✅ Mejor match por entidades: {best_match['pregunta']} (score: {best_match['score']:.2f})")
-                    return best_match
-
-            # 3. Búsqueda por similitud (con texto normalizado)
-            best_similarity_match = None
-            best_similarity_score = 0
+            # 3. Búsqueda por similitud de texto mejorada
+            best_match = None
+            best_score = 0
 
             for i, question in enumerate(self.qa_data['pregunta']):
-                question_normalized = normalize_text(question)
-                similarity = difflib.SequenceMatcher(None, query_normalized, question_normalized).ratio()
-
-                if similarity > best_similarity_score and similarity > 0.5:
-                    best_similarity_score = similarity
-                    best_similarity_match = {
+                similarity = self._improve_similarity_search(query, question)
+                if similarity > best_score and similarity > 0.5:  # Umbral más bajo para más matches
+                    best_score = similarity
+                    best_match = {
                         "pregunta": question,
                         "respuesta": self.qa_data.iloc[i]['respuesta'],
                         "score": similarity,
                         "tipo": "similaridad"
                     }
 
-            if best_similarity_match:
-                logging.info(
-                    f"✅ Match por similitud: {best_similarity_match['pregunta']} (score: {best_similarity_match['score']:.2f})")
-                return best_similarity_match
+            if best_match and best_score > 0.6:
+                return best_match
 
-            logging.info("❌ No se encontró match adecuado")
+            # 4. Búsqueda por entidades mejorada
+            entities = self._extract_entities(query)
+            if entities:
+                entity_matches = []
+                for entity in entities:
+                    if entity in self.entity_to_questions:
+                        for idx in self.entity_to_questions[entity]:
+                            entity_matches.append({
+                                "pregunta": self.qa_data.iloc[idx]['pregunta'],
+                                "respuesta": self.qa_data.iloc[idx]['respuesta'],
+                                "score": 0.7,
+                                "tipo": f"entidad_{entity}"
+                            })
+
+                if entity_matches:
+                    # Eliminar duplicados y ordenar por relevancia
+                    unique_matches = {}
+                    for match in entity_matches:
+                        key = match['pregunta']
+                        if key not in unique_matches:
+                            unique_matches[key] = match
+
+                    matches_list = list(unique_matches.values())
+                    if matches_list:
+                        return matches_list[0]  # Devolver el primero
+
             return None
 
         except Exception as e:
@@ -711,75 +1040,104 @@ class LungHealthChatbot:
             return None
 
     def process_message(self, message):
-        """Procesar mensaje del usuario."""
+        """Procesamiento mejorado sin comandos que interfieran"""
         try:
             if not message or not isinstance(message, str):
-                return {"bot_response": "Por favor escribe un mensaje válido."}
+                return "Por favor escribe un mensaje válido."
 
             message = message.strip()
             if not message:
-                return {"bot_response": "Por favor escribe un mensaje válido."}
+                return "Por favor escribe un mensaje válido."
 
-            # Guardar en historial
             self.conversation_history.append({
                 'timestamp': datetime.now(),
                 'user_message': message,
                 'type': 'user'
             })
 
-            # Normalizar para comandos (sin tildes)
-            lower_message = normalize_text(message)
+            lower_message = message.lower()
 
-            # Comandos especiales (ahora funcionan con y sin tildes)
-            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluacion']):
+            # SOLO comandos esenciales que no interfieren con búsqueda
+            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluación']):
                 risk_start = self.start_risk_assessment()
                 response = risk_start
-                response['bot_response'] = f"🔍 {risk_start['question']}"
+                response['bot_response'] = f"🔍 **{risk_start['question']}**"
                 if risk_start['options']:
-                    response['bot_response'] += f"\n\n💡 Opciones: {', '.join(risk_start['options'])}"
+                    response['bot_response'] += f"\n\n📋 Opciones:\n" + "\n".join(
+                        [f"• {opt}" for opt in risk_start['options']])
+                if risk_start.get('explicacion'):
+                    response['bot_response'] += f"\n\n💡 {risk_start['explicacion']}"
+                response['bot_response'] += f"\n\n📊 Progreso: {risk_start['progress']}"
 
             elif self.risk_assessment_active:
                 risk_response = self.process_risk_response(message)
 
-                if 'error' in risk_response:
-                    response = {'bot_response': f"❌ {risk_response['error']}"}
+                if risk_response.get('type') == 'validation_error':
+                    response = risk_response
+                    response['bot_response'] = f"❌ {risk_response['message']}"
+                    if risk_response['options']:
+                        response['bot_response'] += f"\n\n📋 Opciones válidas:\n" + "\n".join(
+                            [f"• {opt}" for opt in risk_response['options']])
+
                 elif 'question' in risk_response:
                     response = risk_response
-                    response['bot_response'] = f"📝 {risk_response['question']}"
+                    response['bot_response'] = f"🔍 **{risk_response['question']}**"
                     if risk_response['options']:
-                        response['bot_response'] += f"\n\n💡 Opciones: {', '.join(risk_response['options'])}"
+                        response['bot_response'] += f"\n\n📋 Opciones:\n" + "\n".join(
+                            [f"• {opt}" for opt in risk_response['options']])
+                    if risk_response.get('explicacion'):
+                        response['bot_response'] += f"\n\n💡 {risk_response['explicacion']}"
+                    response['bot_response'] += f"\n\n📊 Progreso: {risk_response['progress']}"
                 else:
-                    # Resultado final
                     result = risk_response
                     risk_emoji = "🔴" if result['risk_level'] == "ALTO" else "🟡" if result[
-                                                                                       'risk_level'] == "MODERADO" else "🟢"
+                                                                                       'risk_level'] == "MEDIO" else "🟢"
 
-                    response = {
-                        'bot_response': f"""{risk_emoji} EVALUACIÓN DE RIESGO COMPLETADA
+                    response_text = f"""{risk_emoji} EVALUACIÓN COMPLETADA - RESULTADOS
 
-Nivel de riesgo: {result['risk_level']}
-Puntuación de riesgo: {result.get('risk_score', 'N/A')}
-Confianza del modelo: {result['confidence']}
+📈 Nivel de riesgo: {result['risk_level']}
+🎯 Confianza: {result['confidence']}
 
+📊 Probabilidades:
+• Bajo: {result.get('probability_low', 'N/A')}
+• Medio: {result.get('probability_medium', 'N/A')}  
+• Alto: {result.get('probability_high', 'N/A')}
+
+⚠️ Factores de riesgo identificados:
+"""
+
+                    if result.get('risk_factors'):
+                        for factor in result['risk_factors']:
+                            response_text += f"• **{factor['factor']}** (Nivel {factor['level']} - {factor['severity']})\n"
+                    else:
+                        response_text += "• No se identificaron factores de riesgo significativos\n"
+
+                    response_text += f"""
 📋 RECOMENDACIONES:
 """ + "\n".join([f"• {rec}" for rec in result['recommendations']]) + """
 
-💡 _Esta evaluación es informativa y no reemplaza la consulta médica profesional. Consulta siempre con un especialista._"""
-                    }
+💡 _Esta evaluación es informativa. Consulta siempre con un profesional de la salud._"""
 
-            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos dias', 'buenas']):
+                    response = {'bot_response': response_text}
+
+            elif any(cmd in lower_message for cmd in ['hola', 'hi', 'buenos días', 'buenas']):
                 response = {'bot_response': self.get_welcome_message()}
-            elif any(cmd in lower_message for cmd in ['ayuda', 'comandos']):
+            elif any(cmd in lower_message for cmd in ['ayuda', 'comandos', 'qué puedes hacer']):
                 response = {'bot_response': self.get_help_message()}
             else:
+                # BÚSQUEDA INTELIGENTE SIN INTERFERENCIAS
                 match = self.find_best_match(message)
                 if match:
-                    response = {'bot_response': match['respuesta']}
-                    logging.info(f"🎯 Match final: {match['tipo']} - Pregunta: '{match['pregunta']}'")
+                    if match['tipo'].startswith('neuronal'):
+                        confidence_info = f" (Confianza neuronal: {match.get('confidence', 'N/A')})"
+                    else:
+                        confidence_info = ""
+
+                    response = {'bot_response': match['respuesta'] + confidence_info}
+                    logging.info(f"Match encontrado: {match['tipo']} (score: {match['score']:.2f})")
                 else:
                     response = {'bot_response': self._get_default_response()}
 
-            # Guardar respuesta
             if 'bot_response' in response:
                 self.conversation_history.append({
                     'timestamp': datetime.now(),
@@ -794,78 +1152,103 @@ Confianza del modelo: {result['confidence']}
             return {'bot_response': "Lo siento, hubo un error procesando tu mensaje. Por favor intenta de nuevo."}
 
     def _get_default_response(self):
-        """Respuesta por defecto."""
+        """Respuesta por defecto mejorada"""
         default_responses = [
-            "No encontré información específica sobre tu consulta. ¿Te gustaría realizar una evaluación de riesgo de cáncer de pulmón? Escribe 'evaluar riesgo' para comenzar el cuestionario de 23 preguntas.",
-            "Sobre ese tema no tengo información detallada en mi base de conocimientos. Puedo ayudarte con una evaluación completa de riesgo de cáncer pulmonar o información sobre síntomas, diagnóstico y tratamiento.",
-            "Mi especialidad es el cáncer de pulmón. ¿Te interesa realizar una evaluación de riesgo personalizada? Escribe 'evaluar riesgo' para comenzar."
+            "No encontré información específica sobre tu consulta en mi base de datos. ¿Te gustaría realizar una evaluación de riesgo completa? Escribe 'evaluar riesgo' para comenzar.",
+            "Sobre ese tema específico no tengo información detallada. Puedo ayudarte con una evaluación de riesgo personalizada o puedes intentar reformular tu pregunta.",
+            "Mi especialidad es el cáncer de pulmón y la evaluación de riesgo. ¿Te interesa saber más sobre algún aspecto específico o prefieres una evaluación personalizada?"
         ]
         return random.choice(default_responses)
 
     def get_welcome_message(self):
-        """Mensaje de bienvenida."""
-        model_status = "✅ Con evaluación de riesgo avanzada (ML)" if self.model_data else "⚠️ Evaluación básica disponible"
+        # Verificar de forma segura si los modelos están cargados
+        model_loaded = hasattr(self, 'model_data') and self.model_data is not None
+        neural_loaded = hasattr(self, 'neural_model') and self.neural_model is not None
+
+        model_status = "✅ Con evaluación de riesgo avanzada" if model_loaded else "⚠️ Evaluación básica disponible"
+        neural_status = "🧠 Con inteligencia neuronal avanzada" if neural_loaded else ""
 
         return f"""
-👋 ¡Hola! Soy tu asistente especializado en cáncer de pulmón.
+👋 ¡Hola! Soy tu asistente especializado en Cáncer de Pulmón.
 
 {model_status}
+{neural_status}
 
-Puedo ayudarte con:
-• 🏥 Información médica sobre cáncer pulmonar
-• 🔍 Evaluación de riesgo personalizada (23 preguntas)
-• 💡 Respuestas a tus preguntas específicas
-• 📊 Análisis de síntomas y factores de riesgo
+🏥 CUESTIONARIO MEJORADO DISPONIBLE:
+• 23 preguntas completas basadas en factores reales de riesgo
+• Escalas detalladas del 1 al 7/8/9 según el factor
+• Evaluación comprehensiva con recomendaciones personalizadas
+• Identificación de factores de riesgo específicos
 
-💬 Comandos disponibles:
-• "evaluar riesgo" - Cuestionario completo de evaluación
-• "ayuda" - Ver todos los comandos
-• Cualquier pregunta sobre cáncer de pulmón
+💬 Puedo ayudarte con:
+• Información específica sobre cáncer de pulmón
+• Evaluación de riesgo personalizada
+• Respuestas a preguntas médicas específicas
 
-¡Estoy aquí para ayudarte! 😊
+¡Escribe tu pregunta o escribe 'evaluar riesgo' para comenzar! 😊
 """
 
     def get_help_message(self):
-        """Mensaje de ayuda."""
         return """
-🤖 COMANDOS DISPONIBLES
+🤖 CÓMO PUEDO AYUDARTE
 
 🔍 EVALUACIÓN DE RIESGO:
 • "evaluar riesgo" - Cuestionario completo de 23 preguntas
-• "test riesgo" - Evaluación personalizada con modelo de ML
+• Evaluación personalizada basada en factores reales
+• Resultados detallados con recomendaciones
 
-💡 EJEMPLOS DE PREGUNTAS:
-• "¿Qué es el cáncer de pulmón microcítico?"
-• "¿Cuáles son los síntomas tempranos?"
-• "¿Cómo se trata el adenocarcinoma?"
-• "Factores de riesgo del cáncer de pulmón"
-• "Diagnóstico y estadificación"
-• "Tratamientos disponibles"
+💡 INFORMACIÓN ESPECÍFICA:
+Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón:
 
-🏥 INFORMACIÓN ESPECÍFICA:
-• Tipos de cáncer de pulmón
-• Síntomas y detección temprana
-• Opciones de tratamiento
-• Prevención y factores de riesgo
-• Cuidados paliativos
+• Síntomas y detección:
+  "síntomas tempranos", "señales de alerta", "detección precoz"
 
-¡Puedes hacer preguntas en tus propias palabras! Soy especialista en cáncer de pulmón.
+• Diagnóstico:
+  "pruebas diagnósticas", "biopsia pulmonar", "estadificación"
+
+• Tratamiento:
+  "opciones de tratamiento", "quimioterapia", "cirugía pulmonar"
+
+• Factores de riesgo:
+  "tabaquismo y cáncer", "factores ambientales", "genética"
+
+📝 EJEMPLOS:
+• "¿Qué es el cáncer de pulmón de células pequeñas?"
+• "¿Cómo afecta el tabaquismo al riesgo?"
+• "¿Cuáles son los tratamientos más modernos?"
+
+¡Pregúntame lo que necesites saber! 🎯
 """
 
 
-# Inicializar chatbot
+# Inicializar chatbot de forma segura
 try:
-    chatbot = LungHealthChatbot('datasetchatbot_referencias.csv', 'lung_cancer_decision_tree.joblib')
+    chatbot = LungHealthChatbot('datasetchatbot_referencias.csv', 'saved_models')
     logging.info("✅ Chatbot inicializado exitosamente")
 except Exception as e:
     logging.error(f"❌ Error inicializando chatbot: {e}")
-    chatbot = None
+    # Crear instancia básica del chatbot
+    chatbot = LungHealthChatbot.__new__(LungHealthChatbot)
+    chatbot.neural_model = None
+    chatbot.model_data = None
+    chatbot.qa_data = pd.DataFrame({
+        'pregunta': ['hola'],
+        'respuesta': ['¡Hola! Soy tu asistente de salud pulmonar.'],
+        'intencion': ['saludo'],
+        'entidades': ['saludo']
+    })
+    chatbot.conversation_history = []
+    chatbot.risk_assessment_active = False
+    logging.info("✅ Chatbot básico inicializado como fallback")
 
 
 # Rutas Flask
 @app.route('/')
 def home():
-    welcome_msg = chatbot.get_welcome_message() if chatbot else "El chatbot no está disponible en este momento."
+    if chatbot:
+        welcome_msg = chatbot.get_welcome_message()
+    else:
+        welcome_msg = "El chatbot no está disponible en este momento."
     return render_template('chat.html',
                            welcome_message=welcome_msg,
                            current_time=datetime.now().strftime("%H:%M"))
@@ -910,12 +1293,16 @@ def reset_chat():
 
 @app.route('/health')
 def health_check():
+    model_loaded = hasattr(chatbot, 'model_data') and chatbot.model_data is not None
+    neural_loaded = hasattr(chatbot, 'neural_model') and chatbot.neural_model is not None
+    dataset_size = len(chatbot.qa_data) if hasattr(chatbot, 'qa_data') and chatbot.qa_data is not None else 0
+
     return jsonify({
         'status': 'healthy' if chatbot else 'error',
         'chatbot_loaded': chatbot is not None,
-        'model_loaded': chatbot.model_data is not None if chatbot else False,
-        'dataset_size': len(chatbot.qa_data) if chatbot else 0,
-        'risk_questions': len(chatbot.risk_questions) if chatbot else 0
+        'model_loaded': model_loaded,
+        'neural_model_loaded': neural_loaded,
+        'dataset_size': dataset_size
     })
 
 
@@ -929,5 +1316,3 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
-
-
