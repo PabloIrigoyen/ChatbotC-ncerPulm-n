@@ -1213,7 +1213,7 @@ Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón:
   "tabaquismo y cáncer", "factores ambientales", "genética"
 
 📝 EJEMPLOS:
-• "¿Qué es el cáncer de pulmón de células pequeñas?"
+• "¿Qué es el cáncer de pulmón microcítico o células pequeñas?"
 • "¿Cómo afecta el tabaquismo al riesgo?"
 • "¿Cuáles son los tratamientos más modernos?"
 
@@ -1316,3 +1316,4 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
