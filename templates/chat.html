@@ -697,7 +697,9 @@
                 if (options && options.length > 0) {
                     messageContent += `<div class="risk-options">`;
                     options.forEach(option => {
-                        messageContent += `<button class="risk-option-button" data-value="${option}">${option}</button>`;
+                        const optionValue = typeof option === 'object' ? option.value || option : option;
+                        const optionText = typeof option === 'object' ? option.text || option : option;
+                        messageContent += `<button class="risk-option-button" data-value="${optionValue}">${optionText}</button>`;
                     });
                     messageContent += `</div>`;
                 }
@@ -759,6 +761,104 @@
                 addMessageToDOM(sender, message, isBot, options, progress, timestamp);
             }
             
+            // Función mejorada para manejar la respuesta del servidor
+            function handleServerResponse(data) {
+                hideTypingIndicator();
+                
+                // Verificar si hay un error en la respuesta
+                if (data.error) {
+                    addMessage('Asistente', `Error: ${data.error}`, true);
+                    return;
+                }
+                
+                // Verificar si la respuesta tiene el formato esperado
+                if (!data.bot_response) {
+                    console.error('Respuesta del servidor sin bot_response:', data);
+                    addMessage('Asistente', 'Lo siento, recibí una respuesta inesperada del servidor.', true);
+                    return;
+                }
+                
+                // Manejar diferentes tipos de respuesta
+                if (data.risk_assessment_active) {
+                    // Evaluación de riesgo activa - mostrar pregunta con opciones
+                    let options = null;
+                    let progress = null;
+                    
+                    // Obtener opciones de diferentes posibles ubicaciones en la respuesta
+                    if (data.quick_replies && data.quick_replies.length > 0) {
+                        options = data.quick_replies;
+                    } else if (data.risk_question_data && data.risk_question_data.quick_replies) {
+                        options = data.risk_question_data.quick_replies;
+                    } else if (data.risk_question_data && data.risk_question_data.options) {
+                        options = data.risk_question_data.options;
+                    } else if (data.options) {
+                        options = data.options;
+                    }
+                    
+                    // Obtener progreso
+                    if (data.progress) {
+                        progress = data.progress;
+                    } else if (data.risk_question_data && data.risk_question_data.progress) {
+                        progress = data.risk_question_data.progress;
+                    }
+                    
+                    addMessage('Asistente', data.bot_response, true, options, progress);
+                    
+                } else if (data.bot_response.includes('EVALUACIÓN COMPLETADA') || data.risk_level) {
+                    // Resultado de evaluación de riesgo
+                    const resultDiv = document.createElement('div');
+                    resultDiv.className = 'message bot-message risk-result';
+                    
+                    // Determinar nivel de riesgo para aplicar clase CSS
+                    let riskClass = '';
+                    const riskLevel = data.risk_level || 
+                                    (data.bot_response.includes('ALTO') ? 'ALTO' : 
+                                     data.bot_response.includes('MEDIO') ? 'MEDIO' : 
+                                     data.bot_response.includes('BAJO') ? 'BAJO' : '');
+                    
+                    if (riskLevel === 'ALTO') {
+                        riskClass = 'risk-high';
+                    } else if (riskLevel === 'MEDIO') {
+                        riskClass = 'risk-moderate';
+                    } else if (riskLevel === 'BAJO') {
+                        riskClass = 'risk-low';
+                    }
+                    
+                    resultDiv.classList.add(riskClass);
+                    
+                    const timestamp = new Date().toISOString();
+                    const timeString = new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                    
+                    resultDiv.innerHTML = `
+                        <div class="message-sender">Asistente</div>
+                        <div class="message-content">${data.bot_response.replace(/\n/g, '<br>')}</div>
+                        <div class="message-time">${timeString}</div>
+                    `;
+                    
+                    // Agregar al historial
+                    chatHistory.push({
+                        sender: 'Asistente',
+                        content: data.bot_response,
+                        isBot: true,
+                        options: null,
+                        progress: null,
+                        timestamp: timestamp,
+                        isRiskResult: true,
+                        riskClass: riskClass
+                    });
+                    
+                    // Guardar historial
+                    saveChatHistory();
+                    
+                    chatMessages.appendChild(resultDiv);
+                    scrollToBottom(true);
+                    
+                } else {
+                    // Mensaje normal del bot
+                    addMessage('Asistente', data.bot_response, true);
+                }
+            }
+            
             // Enviar mensaje al presionar Enter o el botón
             function sendMessage() {
                 const message = userInput.value.trim();
@@ -770,7 +870,7 @@
                 // Mostrar indicador de typing
                 showTypingIndicator();
                 
-                // Enviar al servidor
+                // Enviar al servidor con manejo robusto de errores
                 fetch('/send_message', {
                     method: 'POST',
                     headers: {
@@ -778,74 +878,31 @@
                     },
                     body: JSON.stringify({ message: message })
                 })
-                .then(response => response.json())
-                .then(data => {
-                    // Manejar respuesta del servidor
-                    if (data.risk_assessment_active) {
-                        // Mostrar pregunta con opciones si existen
-                        let options = null;
-                        if (data.risk_question_data && data.risk_question_data.options) {
-                            options = data.risk_question_data.options;
-                        }
-                        
-                        addMessage('Asistente', data.bot_response, true, options, 
-                                  data.risk_question_data ? data.risk_question_data.progress : null);
-                    } else {
-                        // Verificar si es un resultado de evaluación de riesgo
-                        if (data.bot_response.includes('EVALUACIÓN COMPLETADA')) {
-                            // Aplicar formato especial para resultados de riesgo
-                            const resultDiv = document.createElement('div');
-                            resultDiv.className = 'message bot-message risk-result';
-                            
-                            // Determinar nivel de riesgo para aplicar clase CSS
-                            let riskClass = '';
-                            if (data.bot_response.includes('ALTO')) {
-                                riskClass = 'risk-high';
-                            } else if (data.bot_response.includes('MODERADO')) {
-                                riskClass = 'risk-moderate';
-                            } else if (data.bot_response.includes('BAJO')) {
-                                riskClass = 'risk-low';
-                            }
-                            
-                            resultDiv.classList.add(riskClass);
-                            
-                            const timestamp = new Date().toISOString();
-                            const timeString = new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                            
-                            resultDiv.innerHTML = `
-                                <div class="message-sender">Asistente</div>
-                                <div class="message-content">${data.bot_response.replace(/\n/g, '<br>')}</div>
-                                <div class="message-time">${timeString}</div>
-                            `;
-                            
-                            // Agregar al historial
-                            chatHistory.push({
-                                sender: 'Asistente',
-                                content: data.bot_response,
-                                isBot: true,
-                                options: null,
-                                progress: null,
-                                timestamp: timestamp,
-                                isRiskResult: true,
-                                riskClass: riskClass
-                            });
-                            
-                            // Guardar historial
-                            saveChatHistory();
-                            
-                            chatMessages.appendChild(resultDiv);
-                            
-                            // Scroll automático solo si estaba al final
-                            scrollToBottom(true);
-                        } else {
-                            addMessage('Asistente', data.bot_response, true);
-                        }
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Error HTTP: ${response.status}`);
                     }
+                    return response.json();
+                })
+                .then(data => {
+                    handleServerResponse(data);
                 })
                 .catch(error => {
+                    console.error('Error en la comunicación:', error);
                     hideTypingIndicator();
-                    addMessage('Asistente', 'Lo siento, hubo un error al procesar tu mensaje. Por favor, verifica tu conexión a internet.', true);
-                    console.error('Error:', error);
+                    
+                    // Mensaje de error más específico
+                    let errorMessage = 'Lo siento, hubo un problema de comunicación con el servidor. ';
+                    
+                    if (error.message.includes('Failed to fetch')) {
+                        errorMessage += 'Verifica tu conexión a internet.';
+                    } else if (error.message.includes('HTTP')) {
+                        errorMessage += 'El servidor no respondió correctamente.';
+                    } else {
+                        errorMessage += 'Por favor intenta de nuevo.';
+                    }
+                    
+                    addMessage('Asistente', errorMessage, true);
                 });
             }
             
@@ -949,4 +1006,3 @@
     </script>
 </body>
 </html>
-
