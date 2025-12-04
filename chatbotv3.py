@@ -1660,7 +1660,7 @@ class LungHealthChatbot:
                         else:
                             response_text += "\n• ✅ No se identificaron factores de riesgo significativos"
 
-                        response_text += f"\n\n📋 RECOMENDACIONES:
+                        response_text += f"\n\n📋 RECOMENDACIONES:"
                         for rec in result['recommendations']:
                             response_text += f"\n• {rec}"
 
@@ -1979,5 +1979,6 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
 
 
