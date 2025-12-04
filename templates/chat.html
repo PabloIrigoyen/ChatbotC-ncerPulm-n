@@ -204,11 +204,32 @@
             cursor: pointer;
             transition: all 0.2s;
             color: #333;
+            text-align: left;
         }
         
         .risk-option-button:hover {
             background-color: #e9ecef;
             border-color: #0088CC;
+        }
+        
+        /* Nuevo estilo para número grande visible */
+        .option-number {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            background-color: #0088CC;
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 24px;
+            margin-right: 8px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .option-text {
+            display: inline-block;
+            vertical-align: middle;
         }
         
         .progress-indicator {
@@ -341,7 +362,7 @@
             
             .risk-option-button {
                 width: 100%;
-                text-align: center;
+                text-align: left;
             }
             
             .new-message-indicator {
@@ -386,6 +407,14 @@
                 bottom: 60px;
                 padding: 6px 14px;
                 font-size: 11px;
+            }
+            
+            .option-number {
+                width: 20px;
+                height: 20px;
+                line-height: 20px;
+                font-size: 12px;
+                margin-right: 6px;
             }
         }
         
@@ -548,6 +577,7 @@
             let scrollTimeout = null;
             let touchStartY = 0;
             let isPulling = false;
+            let currentQuestionId = null;
             
             // Clave para identificar si es una recarga de página
             const PAGE_RELOAD_KEY = 'chatbot_page_reload';
@@ -557,6 +587,30 @@
             
             // Marcar que la página se está recargando
             sessionStorage.setItem(PAGE_RELOAD_KEY, 'true');
+            
+            // Función para extraer el número de una opción
+            function extractOptionNumber(optionText) {
+                // Buscar el primer número en el texto
+                const match = optionText.match(/^(\d+)/);
+                return match ? parseInt(match[1]) : null;
+            }
+            
+            // Función para formatear opciones para mostrar con número visible
+            function formatOptionForDisplay(optionText) {
+                const number = extractOptionNumber(optionText);
+                if (number) {
+                    // Separar el número del texto
+                    const text = optionText.replace(/^\d+\s*-\s*/, '');
+                    return {
+                        number: number,
+                        display: `<span class="option-number">${number}</span><span class="option-text">${text}</span>`
+                    };
+                }
+                return {
+                    number: null,
+                    display: optionText
+                };
+            }
             
             // Cargar historial desde sessionStorage
             function loadChatHistory() {
@@ -697,9 +751,13 @@
                 if (options && options.length > 0) {
                     messageContent += `<div class="risk-options">`;
                     options.forEach(option => {
-                        const optionValue = typeof option === 'object' ? option.value || option : option;
-                        const optionText = typeof option === 'object' ? option.text || option : option;
-                        messageContent += `<button class="risk-option-button" data-value="${optionValue}">${optionText}</button>`;
+                        // Extraer número y formatear para mostrar
+                        const formattedOption = formatOptionForDisplay(option);
+                        const optionNumber = formattedOption.number;
+                        const displayText = formattedOption.display;
+                        
+                        // Guardar tanto el número como el texto completo
+                        messageContent += `<button class="risk-option-button" data-value="${optionNumber || option}">${displayText}</button>`;
                     });
                     messageContent += `</div>`;
                 }
@@ -732,8 +790,9 @@
                         const optionButtons = messageDiv.querySelectorAll('.risk-option-button');
                         optionButtons.forEach(button => {
                             button.addEventListener('click', function() {
-                                userInput.value = this.getAttribute('data-value');
-                                sendMessage();
+                                // Obtener solo el número del atributo data-value
+                                const selectedValue = this.getAttribute('data-value');
+                                sendMessage(selectedValue);
                             });
                         });
                     }, 100);
@@ -776,6 +835,11 @@
                     console.error('Respuesta del servidor sin bot_response:', data);
                     addMessage('Asistente', 'Lo siento, recibí una respuesta inesperada del servidor.', true);
                     return;
+                }
+                
+                // Guardar el question_id si está disponible
+                if (data.risk_question_data && data.risk_question_data.question_id) {
+                    currentQuestionId = data.risk_question_data.question_id;
                 }
                 
                 // Manejar diferentes tipos de respuesta
@@ -859,16 +923,36 @@
                 }
             }
             
-            // Enviar mensaje al presionar Enter o el botón
-            function sendMessage() {
-                const message = userInput.value.trim();
-                if (message === '') return;
+            // Enviar mensaje al presionar Enter o el botón (o con valor predefinido)
+            function sendMessage(predefinedValue = null) {
+                let message = predefinedValue;
                 
-                addMessage('Tú', message, false);
-                userInput.value = '';
+                // Si no hay valor predefinido, usar el input
+                if (message === null) {
+                    message = userInput.value.trim();
+                    if (message === '') return;
+                    userInput.value = '';
+                }
+                
+                // Agregar el mensaje del usuario (mostrar el número si es de opción)
+                let displayMessage = message;
+                if (predefinedValue !== null && !isNaN(predefinedValue)) {
+                    displayMessage = `Opción ${predefinedValue}`;
+                }
+                addMessage('Tú', displayMessage, false);
                 
                 // Mostrar indicador de typing
                 showTypingIndicator();
+                
+                // Preparar datos para enviar
+                const requestData = { 
+                    message: message 
+                };
+                
+                // Agregar question_id si está disponible
+                if (currentQuestionId) {
+                    requestData.question_id = currentQuestionId;
+                }
                 
                 // Enviar al servidor con manejo robusto de errores
                 fetch('/send_message', {
@@ -876,7 +960,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ message: message })
+                    body: JSON.stringify(requestData)
                 })
                 .then(response => {
                     if (!response.ok) {
@@ -953,11 +1037,11 @@
             }
             
             // Event Listeners
-            sendButton.addEventListener('click', sendMessage);
+            sendButton.addEventListener('click', () => sendMessage(null));
             
             userInput.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
-                    sendMessage();
+                    sendMessage(null);
                 }
             });
             
@@ -990,8 +1074,11 @@
             userInput.focus();
             
             // Re-enfocar el input después de enviar mensaje o hacer clic
-            document.addEventListener('click', function() {
-                userInput.focus();
+            document.addEventListener('click', function(e) {
+                // Solo enfocar si no se hizo clic en un botón de opción
+                if (!e.target.closest('.risk-option-button')) {
+                    userInput.focus();
+                }
             });
             
             // Cargar historial al iniciar
