@@ -1167,28 +1167,20 @@ class LungHealthChatbot:
             logging.info(f"🌲 PREDICCIÓN CON RANDOM FOREST")
             logging.info(f"🤖 Modelo tipo: {type(model).__name__}")
             logging.info(f"📝 Respuestas UI (1-7): {responses}")
-
-            # Obtener los nombres de características que espera el modelo
             feature_names = self._get_model_feature_names()
             if feature_names is None:
                 logging.error("❌ No se pudieron obtener los nombres de características")
                 return self._get_fallback_prediction("No se encontraron nombres de características")
 
             logging.info(f"📊 Features esperadas ({len(feature_names)}): {feature_names}")
-
-            # Construir vector de características en el orden correcto
             model_input = []
             debug_info = []
 
             for i, feature in enumerate(feature_names):
                 feature_clean = feature.strip()
                 found = False
-
-                # Buscar la característica en las respuestas (comparación flexible)
                 for resp_key, resp_value in responses.items():
                     resp_key_clean = resp_key.strip()
-
-                    # Comparar directamente o con variaciones
                     if (feature_clean.lower() == resp_key_clean.lower() or
                             feature_clean.replace(' ', '').lower() == resp_key_clean.replace(' ', '').lower() or
                             feature_clean.lower() in resp_key_clean.lower() or
@@ -1534,7 +1526,6 @@ class LungHealthChatbot:
                         'severity': severity
                     })
 
-        # Ordenar por nivel descendente
         risk_factors.sort(key=lambda x: x['level'], reverse=True)
 
         return risk_factors
@@ -1665,11 +1656,11 @@ class LungHealthChatbot:
                                     severity_emoji = "🟡"
                                 else:
                                     severity_emoji = "🟢"
-                                response_text += f"\n• {severity_emoji} **{factor['factor']}** (Nivel {factor['level']}/7 - {factor['severity']})"
+                                response_text += f"\n• {severity_emoji} {factor['factor']} (Nivel {factor['level']}/7 - {factor['severity']})"
                         else:
                             response_text += "\n• ✅ No se identificaron factores de riesgo significativos"
 
-                        response_text += f"\n\n📋 **RECOMENDACIONES:**"
+                        response_text += f"\n\n📋 RECOMENDACIONES:
                         for rec in result['recommendations']:
                             response_text += f"\n• {rec}"
 
@@ -1988,4 +1979,5 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
+
 
