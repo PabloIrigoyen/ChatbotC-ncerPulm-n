@@ -611,7 +611,7 @@ class LungHealthChatbot:
             },
             {
                 "id": "occupational_hazards",
-                "pregunta": "¿Estás expuesto a riesgos ocupacionales (químicos, polvo industrial, etc.)?",
+                "pregunta": "¿Estás expuesto a riesgos ocupacionales (químicos, polvo industrial,asbesto etc.)?",
                 "tipo": "escala",
                 "opciones": [
                     "1 - Sin exposición",
@@ -643,7 +643,7 @@ class LungHealthChatbot:
             },
             {
                 "id": "chronic_lung_disease",
-                "pregunta": "¿Tienes enfermedad pulmonar crónica (EPOC, asma, etc.)?",
+                "pregunta": "¿Tienes enfermedad pulmonar crónica (Enfermedad pulmonar obstructiva crónica o EPOC, asma, etc.)?",
                 "tipo": "escala",
                 "opciones": [
                     "1 - Sin enfermedad",
@@ -663,11 +663,11 @@ class LungHealthChatbot:
                 "tipo": "escala_inversa",
                 "opciones": [
                     "1 - Muy balanceada (frutas/verduras diarias, proteínas magras)",
-                    "2 - Balanceada (dieta mediterránea)",
-                    "3 - Moderadamente balanceada (ocasional comida procesada)",
+                    "2 - Balanceada (dieta mediterránea basa en comidas a base de vegetales, con sólo pequeñas cantidades de carne de res y pollo)",
+                    "3 - Moderadamente balanceada (ocasionalmente comida procesada)",
                     "4 - Neutral (mezcla de saludable y no saludable)",
                     "5 - Poco balanceada (frecuente comida procesada)",
-                    "6 - Desbalanceada (predominio comida rápida)",
+                    "6 - Desbalanceada (predominio de comida rápida)",
                     "7 - Muy desbalanceada (dieta principalmente procesada)"
                 ],
                 "explicacion": "💡 1 = Dieta muy saludable, 7 = Dieta muy poco saludable",
@@ -1167,20 +1167,28 @@ class LungHealthChatbot:
             logging.info(f"🌲 PREDICCIÓN CON RANDOM FOREST")
             logging.info(f"🤖 Modelo tipo: {type(model).__name__}")
             logging.info(f"📝 Respuestas UI (1-7): {responses}")
+
+            # Obtener los nombres de características que espera el modelo
             feature_names = self._get_model_feature_names()
             if feature_names is None:
                 logging.error("❌ No se pudieron obtener los nombres de características")
                 return self._get_fallback_prediction("No se encontraron nombres de características")
 
             logging.info(f"📊 Features esperadas ({len(feature_names)}): {feature_names}")
+
+            # Construir vector de características en el orden correcto
             model_input = []
             debug_info = []
 
             for i, feature in enumerate(feature_names):
                 feature_clean = feature.strip()
                 found = False
+
+                # Buscar la característica en las respuestas (comparación flexible)
                 for resp_key, resp_value in responses.items():
                     resp_key_clean = resp_key.strip()
+
+                    # Comparar directamente o con variaciones
                     if (feature_clean.lower() == resp_key_clean.lower() or
                             feature_clean.replace(' ', '').lower() == resp_key_clean.replace(' ', '').lower() or
                             feature_clean.lower() in resp_key_clean.lower() or
@@ -1455,7 +1463,7 @@ class LungHealthChatbot:
             return "MEDIO"
 
     def _determine_risk_level_simple(self, prediction):
-    
+
         if prediction == 0:
             return "BAJO"
         elif prediction == 1:
@@ -1466,7 +1474,7 @@ class LungHealthChatbot:
             return "MEDIO"
 
     def _get_fallback_prediction(self, reason):
-       
+
         logging.error(f"⚠️ Usando predicción de respaldo: {reason}")
 
         return {
@@ -1488,7 +1496,7 @@ class LungHealthChatbot:
         }
 
     def _identify_significant_risk_factors(self, responses):
-      
+
         risk_factors = []
 
         # Mapeo de nombres de factores a español
@@ -1506,25 +1514,34 @@ class LungHealthChatbot:
             'Passive Smoker': 'Fumador pasivo',
             'Obesity': 'Obesidad',
             'Fatigue': 'Fatiga severa',
+            'Alcohol use': 'Consumo de Alcohol',
+            'Dust Allergy': 'Alergia al polvo',
+            'Balanced Diet': 'Dieta balanceada',
+            'Wheezing': 'Silibancia',
+            'Swallowing Difficulty': 'Dificultad para tragar',
+            'Clubbing of Finger Nails': 'Engrosamiento de las uñas de los pies',
+            'Frequent Cold': 'Resfriados Frecuentes',
+            'Snoring': 'Ronquidos',
             'Age': 'Edad avanzada'
         }
 
         for factor_key, value in responses.items():
             if isinstance(value, (int, float)):
-                severity = None
-                if value == 7:
-                    severity = 'MÁXIMO'
-                elif value >= 6:
-                    severity = 'ALTO'
-                elif value >= 5:
-                    severity = 'MODERADO-ALTO'
+                if factor_key not in ['Edad', 'edad', 'Age', 'age']:
+                    severity = None
+                    if value == 7:
+                        severity = 'MÁXIMO'
+                    elif value >= 6:
+                        severity = 'ALTO'
+                    elif value >= 5:
+                        severity = 'MODERADO-ALTO'
 
-                if severity:
-                    risk_factors.append({
-                        'factor': factor_names.get(factor_key, factor_key),
-                        'level': value,
-                        'severity': severity
-                    })
+                    if severity:
+                        risk_factors.append({
+                            'factor': factor_names.get(factor_key, factor_key),
+                            'level': value,
+                            'severity': severity
+                        })
 
         risk_factors.sort(key=lambda x: x['level'], reverse=True)
 
@@ -1548,7 +1565,7 @@ class LungHealthChatbot:
                 "💪 Ejercicio supervisado y rehabilitación pulmonar",
                 "📊 Monitoreo semanal de síntomas y evolución"
             ]
-        else:  
+        else:
             recommendations = [
                 "✅ Excelente perfil de salud pulmonar",
                 "💪 Mantenimiento de hábitos saludables actuales",
@@ -1588,7 +1605,7 @@ class LungHealthChatbot:
 
             lower_message = message.lower()
 
-            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluación']):
+            if any(cmd in lower_message for cmd in ['evaluar riesgo', 'test riesgo', 'cuestionario', 'evaluación','/evaluar']):
                 risk_start = self.start_risk_assessment()
                 response = {
                     "risk_assessment_active": True,
@@ -1632,13 +1649,13 @@ class LungHealthChatbot:
 
                         if result['risk_level'] == "ALTO":
                             risk_emoji = "🔴"
-                            risk_title = "🔴 ALTO RIESGO"
+                            risk_title = "🔴 RIESGO ALTO"
                         elif result['risk_level'] == "MEDIO":
                             risk_emoji = "🟡"
                             risk_title = "🟡 RIESGO MEDIO"
                         else:  # BAJO
                             risk_emoji = "🟢"
-                            risk_title = "🟢 BAJO RIESGO"
+                            risk_title = "🟢 RIESGO BAJO"
 
                         response_text = f"""{risk_emoji} EVALUACIÓN COMPLETADA - RESULTADOS
 
@@ -1682,7 +1699,7 @@ class LungHealthChatbot:
                     "bot_response": '🙏 De nada, estoy para responder cualquier otra consulta sobre cáncer de pulmón'}
             elif any(cmd in lower_message for cmd in ['adiós', 'bye', 'hasta luego', 'nos vemos']):
                 return {"bot_response": '👋 Hasta la próxima consulta'}
-            elif any(cmd in lower_message for cmd in ['ayuda', 'comandos', 'qué puedes hacer']):
+            elif any(cmd in lower_message for cmd in ['ayuda', 'comandos', 'qué puedes hacer', '/ayuda']):
                 return {"bot_response": self.get_help_message()}
             else:
                 # Búsqueda inteligente
@@ -1728,7 +1745,7 @@ class LungHealthChatbot:
 • Evaluación de riesgo personalizada
 • Respuestas a preguntas médicas
 
-¡Escribe tu pregunta o 'evaluar riesgo' para comenzar! 😊
+¡Escribe tu pregunta o '/evaluar' para comenzar! 😊
 """
 
     def get_help_message(self):
@@ -1741,21 +1758,16 @@ class LungHealthChatbot:
 • Resultados detallados con 3 niveles de precisión
 
 📊 Para obtener diferentes niveles de riesgo:
-• Para riesgo BAJO: Respuestas bajas (1-3) en factores clave
-• Para riesgo MEDIO: Algunas respuestas moderadas (4-5)
-• Para riesgo ALTO: Respuestas altas (6-7) en múltiples factores
-
+• Riesgo BAJO
+• Riesgo MEDIO
+• Riesgo ALTO
 💡 INFORMACIÓN ESPECÍFICA:
 Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón:
 
-• Síntomas y detección:
-  "síntomas tempranos", "señales de alerta", "detección precoz"
-• Diagnóstico:
-  "pruebas diagnósticas", "biopsia pulmonar", "estadificación"
-• Tratamiento:
-  "opciones de tratamiento", "quimioterapia", "cirugía pulmonar"
-• Factores de riesgo:
-  "tabaquismo y cáncer", "factores ambientales", "genética"
+• Síntomas y detección
+• Diagnóstico
+• Tratamiento
+• Factores de riesgo
 
 📝 EJEMPLOS:
 • "¿Qué es el cáncer de pulmón de células pequeñas?"
@@ -1795,7 +1807,7 @@ Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón:
             return []
 
     def _improve_similarity_search(self, query, question):
-        
+
         query_lower = query.lower()
         question_lower = question.lower()
         basic_similarity = difflib.SequenceMatcher(None, query_lower, question_lower).ratio()
@@ -1876,7 +1888,7 @@ Puedes preguntarme sobre cualquier aspecto del cáncer de pulmón:
 
                     matches_list = list(unique_matches.values())
                     if matches_list:
-                        return matches_list[0] 
+                        return matches_list[0]
 
             return None
 
@@ -1979,6 +1991,3 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=port, debug=False)
     else:
         app.run(debug=debug_mode, host='0.0.0.0', port=port)
-
-
-
